@@ -28,7 +28,7 @@ file "tmp/yaml-test-suite.tml" => "tmp/yaml-test-suite/testml" do
   end
 end
 
-task "test" => ["tmp/testml", "tmp/yaml-test-suite.tml"] do
+task "spec" => ["tmp/testml", "tmp/yaml-test-suite.tml"] do
   env = {
     "PATH" => "#{File.expand_path("tmp/testml/bin", __dir__)}:#{ENV["PATH"]}",
     "TESTML_BRIDGE" => "bridge",
@@ -36,10 +36,10 @@ task "test" => ["tmp/testml", "tmp/yaml-test-suite.tml"] do
     "TESTML_LIB" => "#{File.expand_path("tmp", __dir__)}:#{File.expand_path("tmp/yaml-test-suite/testml", __dir__)}"
   }
 
-  sh(env, "prove -v test/*.tml test/*_test.rb")
+  sh(env, "prove -v spec/*.tml spec/*_spec.rb")
 end
 
-task "default" => "test"
+task "default" => "spec"
 
 CLEAN.include("test/.testml")
 CLEAN.include("tmp")
