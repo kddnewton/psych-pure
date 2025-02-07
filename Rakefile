@@ -2,6 +2,7 @@
 
 require "bundler/gem_tasks"
 require "rake/clean"
+require "rake/testtask"
 
 directory "tmp"
 
@@ -39,7 +40,13 @@ task "spec" => ["tmp/testml", "tmp/yaml-test-suite.tml"] do
   sh(env, "prove -v spec/*.tml spec/*_spec.rb")
 end
 
-task "default" => "spec"
+Rake::TestTask.new(:test) do |t|
+  t.libs << "test"
+  t.libs << "lib"
+  t.test_files = FileList["test/**/*_test.rb"]
+end
 
-CLEAN.include("test/.testml")
+task "default" => ["spec", "test"]
+
+CLEAN.include("spec/.testml")
 CLEAN.include("tmp")
