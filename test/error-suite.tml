@@ -1,0 +1,9 @@
+#!/usr/bin/env testml
+
+
+<*error> =>
+  "({*Name}) {*Label} -- '{*in-yaml}'":
+    *in-yaml.unescape.parse('expect-error') == 1
+
+
+%Import yaml-test-suite

@@ -1,0 +1,29 @@
+PATH
+  remote: .
+  specs:
+    psych-pure (0.1.0)
+      psych
+      strscan
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    date (3.4.1)
+    psych (5.2.2)
+      date
+      stringio
+    rake (13.2.1)
+    stringio (3.1.2)
+    strscan (3.1.2)
+
+PLATFORMS
+  arm64-darwin-23
+  ruby
+
+DEPENDENCIES
+  bundler
+  psych-pure!
+  rake
+
+BUNDLED WITH
+   2.5.16

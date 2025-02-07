@@ -1,0 +1,193 @@
+#!/usr/bin/env testml
+
+
+parse(*yaml) == *events
+  :"+ -- '{*yaml}'"
+
+
+
+=== Empty stream
+--- yaml: ""
+--- events
++STR
+-STR
+
+
+=== Empty stream with comments
+--- yaml(<)
+    # comment
+
+    # blank line above
+--- ^events
+
+
+=== Block node with header and footer
+--- yaml(<)
+    ---
+    foo:
+    - bar
+    ...
+--- events
++STR
++DOC ---
++MAP
+=VAL :foo
++SEQ
+=VAL :bar
+-SEQ
+-MAP
+-DOC ...
+-STR
+
+
+
+=== Two flow nodes with header
+--- yaml(<)
+    --- [foo, bar]
+    --- {foo: bar}
+--- events
++STR
++DOC ---
++SEQ []
+=VAL :foo
+=VAL :bar
+-SEQ
+-DOC
++DOC ---
++MAP {}
+=VAL :foo
+=VAL :bar
+-MAP
+-DOC
+-STR
+
+
+
+=== Two flow nodes with header and footer
+--- yaml(<)
+    --- [foo, bar]
+    ...
+    --- {foo: bar}
+    ...
+--- events
++STR
++DOC ---
++SEQ []
+=VAL :foo
+=VAL :bar
+-SEQ
+-DOC ...
++DOC ---
++MAP {}
+=VAL :foo
+=VAL :bar
+-MAP
+-DOC ...
+-STR
+
+
+
+=== Two flow nodes with header and footer w/ comment
+--- yaml(<)
+    --- # comment
+    [foo, bar]
+    ... # comment
+    --- # comment
+    {foo: bar}
+    ... # comment
+--- events
++STR
++DOC ---
++SEQ []
+=VAL :foo
+=VAL :bar
+-SEQ
+-DOC ...
++DOC ---
++MAP {}
+=VAL :foo
+=VAL :bar
+-MAP
+-DOC ...
+-STR
+
+
+
+=== Two block nodes with header and footer
+--- yaml(<)
+    ---
+    - foo
+    - bar
+    ...
+    ---
+    foo: bar
+    ...
+--- events
++STR
++DOC ---
++SEQ
+=VAL :foo
+=VAL :bar
+-SEQ
+-DOC ...
++DOC ---
++MAP
+=VAL :foo
+=VAL :bar
+-MAP
+-DOC ...
+-STR
+
+
+
+=== Two scalar nodes with header and footer
+--- yaml(<)
+    --- foo
+      bar
+    ...
+    --- baz
+    ...
+--- events
++STR
++DOC ---
+=VAL :foo bar
+-DOC ...
++DOC ---
+=VAL :baz
+-DOC ...
+-STR
+
+
+
+=== Empty stream with footer
+--- yaml
+...
+--- events
++STR
+-STR
+
+
+
+=== Empty stream with footer; no final newline
+--- yaml(-)
+...
+--- ^events
+
+
+
+=== Stream with just header
+--- yaml(<)
+    ---
+--- events
++STR
++DOC ---
+=VAL :
+-DOC
+-STR
+
+
+
+=== Stream with just header; no final newline
+--- yaml(<-)
+    ---
+--- ^events

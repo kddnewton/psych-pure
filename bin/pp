@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$:.unshift(File.expand_path("../lib", __dir__))
+require "psych/pure"
+
+def read_source(filename)
+  if File.exist?(filepath = File.expand_path(File.join("../tmp/yaml-test-suite/src", filename), __dir__))
+    fixture = Psych::Pure.load(File.read(filepath))[0]["yaml"]
+    fixture.gsub!(/␣/, " ")
+    fixture.gsub!(/—*»/, "\t")
+    fixture.gsub!(/⇔/, "\uFEFF")
+    fixture.gsub!(/↵/, "")
+    fixture.gsub!(/∎\n$/, "")
+    fixture
+  else
+    File.read(filename)
+  end
+end
+
+case ARGV.shift
+when "cat"
+  puts read_source(ARGV.shift)
+when "compare"
+  pp Psych.parse(read_source(ARGV.shift))
+when "console"
+  require "irb"
+  IRB.start(__FILE__)
+when "load"
+  pp Psych::Pure.load(read_source(ARGV.shift))
+when "parse"
+  pp Psych::Pure.parse(read_source(ARGV.shift))
+else
+  warn("Usage: pp [cat|compare|console|load|parse] [file]")
+  exit(1)
+end

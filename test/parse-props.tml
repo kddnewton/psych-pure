@@ -1,0 +1,135 @@
+#!/usr/bin/env testml
+
+
+parse(*yaml) == *events
+  :"+ -- '{*yaml}'"
+
+
+
+=== Anchor and alias
+--- yaml(<)
+    --- &a1 [*a1]
+--- events
++STR
++DOC ---
++SEQ [] &a1
+=ALI *a1
+-SEQ
+-DOC
+-STR
+
+
+
+=== Tag
+--- yaml
+- !t1 foo
+--- events
++STR
++DOC
++SEQ
+=VAL <!t1> :foo
+-SEQ
+-DOC
+-STR
+
+
+
+=== Tag and Anchor
+--- yaml
+- !t1 &a1 foo
+--- events
++STR
++DOC
++SEQ
+=VAL &a1 <!t1> :foo
+-SEQ
+-DOC
+-STR
+
+
+
+=== Anchor and Tag
+--- yaml
+- &a1 !t1 foo
+--- ^events
+
+
+
+=== Anchors on map and elements
+--- yaml
+&a1
+&a2 foo: &a3 bar
+--- events
++STR
++DOC
++MAP &a1
+=VAL &a2 :foo
+=VAL &a3 :bar
+-MAP
+-DOC
+-STR
+
+
+
+=== Anchors on seq and elements
+--- yaml
+&a1
+- &a2 foo
+- &a3 bar
+--- events
++STR
++DOC
++SEQ &a1
+=VAL &a2 :foo
+=VAL &a3 :bar
+-SEQ
+-DOC
+-STR
+
+
+
+=== Anchors on flow map and elements
+--- yaml
+&a1 { &a2 foo: &a3 bar }
+--- events
++STR
++DOC
++MAP {} &a1
+=VAL &a2 :foo
+=VAL &a3 :bar
+-MAP
+-DOC
+-STR
+
+
+
+=== Anchors on flow seq and elements
+--- yaml
+&a1 [ &a2 foo, &a3 bar ]
+--- events
++STR
++DOC
++SEQ [] &a1
+=VAL &a2 :foo
+=VAL &a3 :bar
+-SEQ
+-DOC
+-STR
+
+
+
+=== Anchors on map key
+--- yaml
+&a1 foo: bar
+--- events
++STR
++DOC
++MAP
+=VAL &a1 :foo
+=VAL :bar
+-MAP
+-DOC
+-STR
+
+
+

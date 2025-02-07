@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "bundler/inline"
+
+gemfile do
+  source "https://rubygems.org"
+  gem "benchmark-ips"
+  gemspec
+end
+
+sources =
+  Dir[File.expand_path("../tmp/yaml-test-suite/src/*.yaml", __dir__)].filter_map do |filepath|
+    fixture = Psych::Pure.load_file(filepath)[0]
+    next if fixture["skip"] || fixture["fail"]
+
+    source = +fixture["yaml"]
+    source.gsub!(/␣/, " ")
+    source.gsub!(/—*»/, "\t")
+    source.gsub!(/⇔/, "\uFEFF")
+    source.gsub!(/↵/, "")
+    source.gsub!(/∎\n$/, "")
+
+    begin
+      Psych.unsafe_load(source)
+    rescue Psych::SyntaxError
+      next
+    end
+
+    source
+  end
+
+Benchmark.ips do |x|
+  x.report("Psych") { sources.each { |source| Psych.unsafe_load(source) } }
+  x.report("Psych::Pure") { sources.each { |source| Psych::Pure.unsafe_load(source) } }
+  x.compare!
+end
