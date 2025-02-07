@@ -9,7 +9,7 @@ GEM
   remote: https://rubygems.org/
   specs:
     date (3.4.1)
-    psych (5.2.2)
+    psych (5.2.3)
       date
       stringio
     rake (13.2.1)
