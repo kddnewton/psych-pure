@@ -1181,9 +1181,9 @@ module Psych
           end1 = "(?:\\\\\\r?\\n[ \\t]*)"
           end2 = "(?:[ \\t]*\\r?\\n[ \\t]*)"
           hex = "[0-9a-fA-F]"
-          hex2 = "(?:\\\\x([0-9a-fA-F]{2}))"
-          hex4 = "(?:\\\\u([0-9a-fA-F]{4}))"
-          hex8 = "(?:\\\\U([0-9a-fA-F]{8}))"
+          hex2 = "(?:\\\\x(#{hex}{2}))"
+          hex4 = "(?:\\\\u(#{hex}{4}))"
+          hex8 = "(?:\\\\U(#{hex}{8}))"
 
           value = from(pos_start).byteslice(1...-1)
           value.gsub!(%r{(?:\r\n|#{end1}|#{end2}+|#{hex2}|#{hex4}|#{hex8}|\\[\\ "/_0abefnrt\tvLNP])}) do |m|
@@ -1997,7 +1997,7 @@ module Psych
         if match(/[\u{31}-\u{39}]/)
           Integer(from(pos_start))
         else
-          match = @scanner.check(/.*\n((?:\ *\n)*)(\ *)(.?)/)
+          @scanner.check(/.*\n((?:\ *\n)*)(\ *)(.?)/)
 
           pre = @scanner[1]
           if !@scanner[3].empty?

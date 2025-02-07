@@ -17,4 +17,4 @@ jobs:
     - uses: shogo82148/actions-setup-perl@v1
       with:
         install-modules-with: cpanm
-    - run: bundle exec rake spec
+    - run: bundle exec rake
