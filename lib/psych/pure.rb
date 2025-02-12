@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "delegate"
+require "pp"
 require "psych"
 require "strscan"
 require "stringio"
@@ -7,6 +9,204 @@ require "stringio"
 module Psych
   # A YAML parser written in Ruby.
   module Pure
+    # Represents a comment in the input.
+    class Comment
+      attr_reader :value, :start_line, :start_column, :end_line, :end_column
+
+      def initialize(value, start_line, start_column, end_line, end_column, inline)
+        @value = value
+        @start_line = start_line
+        @start_column = start_column
+        @end_line = end_line
+        @end_column = end_column
+        @inline = inline
+      end
+
+      def inline?
+        @inline
+      end
+    end
+
+    # Wraps a Ruby object with its leading and trailing YAML comments from the
+    # source input.
+    class YAMLCommentsDelegator < SimpleDelegator
+      attr_reader :yaml_leading_comments, :yaml_trailing_comments
+
+      def initialize(object, yaml_leading_comments, yaml_trailing_comments)
+        super(object)
+        @yaml_leading_comments = yaml_leading_comments
+        @yaml_trailing_comments = yaml_trailing_comments
+      end
+    end
+
+    # This module contains all of the extensions to Psych that we need in order
+    # to support parsing comments.
+    module CommentExtensions
+      # Extend the Handler to be able to handle comments coming out of the
+      # parser.
+      module Handler
+        def comment(value, start_line, start_column, end_line, end_column, inline)
+        end
+      end
+
+      # Extend the TreeBuilder to be able to attach comments to nodes.
+      module TreeBuilder
+        def comments
+          @comments ||= []
+        end
+
+        def comment(value, start_line, start_column, end_line, end_column, inline)
+          comments << Comment.new(value, start_line, start_column, end_line, end_column, inline)
+        end
+
+        def end_stream
+          attach_comments(super)
+        end
+
+        private
+
+        def attach_comments(node)
+          comments.each do |comment|
+            preceding, enclosing, following = nearest_nodes(node, comment)
+
+            if comment.inline?
+              if preceding
+                preceding.trailing_comment(comment)
+              else
+                (following || enclosing || node).leading_comment(comment)
+              end
+            else
+              # If a comment exists on its own line, prefer a leading comment.
+              if following
+                following.leading_comment(comment)
+              elsif preceding
+                preceding.trailing_comment(comment)
+              else
+                (enclosing || node).leading_comment(comment)
+              end
+            end
+          end
+
+          comments.clear
+          node
+        end
+
+        def nearest_nodes(node, comment)
+          candidates = (node.children || []).sort_by { |child| [child.start_line, child.start_column] }
+          preceding = nil
+          following = nil
+
+          comment_start_line = comment.start_line
+          comment_start_column = comment.start_column
+          comment_end_line = comment.end_line
+          comment_end_column = comment.end_column
+
+          left = 0
+          right = candidates.length
+
+          # This is a custom binary search that finds the nearest nodes to the
+          # given comment. When it finds a node that completely encapsulates the
+          # comment, it recurses downward into the tree.
+          while left < right
+            middle = (left + right) / 2
+            candidate = candidates[middle]
+
+            if ((comment_start_line > candidate.start_line) || (comment_start_line == candidate.start_line && comment_start_column >= candidate.start_column)) &&
+               ((comment_end_line < candidate.end_line) || (comment_end_line == candidate.end_line && comment_end_column <= candidate.end_column))
+              # The comment is completely contained by this candidate node.
+              # Abandon the binary search at this level.
+              return nearest_nodes(candidate, comment)
+            end
+
+            if (candidate.end_line < comment_start_line) ||
+               (candidate.end_line == comment_start_line && candidate.end_column <= comment_start_column)
+              # This candidate falls completely before the comment. Because we
+              # will never consider this candidate or any candidates before it
+              # again, this candidate must be the closest preceding candidate we
+              # have encountered so far.
+              preceding = candidate
+              left = middle + 1
+              next
+            end
+
+            if (candidate.start_line > comment_end_line) ||
+               (candidate.start_line == comment_end_line && candidate.start_column >= comment_end_column)
+              # This candidate falls completely after the comment. Because we
+              # will never consider this candidate or any candidates after it
+              # again, this candidate must be the closest following candidate we
+              # have encountered so far.
+              following = candidate
+              right = middle
+              next
+            end
+
+            # This should only happen if there is a bug in this parser.
+            raise InternalException, "Comment location overlaps with a target location"
+          end
+
+          [preceding, node, following]
+        end
+      end
+
+      # Extend the document stream to be able to attach comments to the
+      # document.
+      module DocumentStream
+        def end_document(implicit_end = !streaming?)
+          @last.implicit_end = implicit_end
+          @block.call(attach_comments(pop))
+        end
+      end
+
+      # Extend the nodes to be able to store comments.
+      module Node
+        def leading_comments
+          @leading_comments ||= []
+        end
+
+        def leading_comment(comment)
+          leading_comments << comment
+        end
+
+        def trailing_comments
+          @trailing_comments ||= []
+        end
+
+        def trailing_comment(comment)
+          trailing_comments << comment
+        end
+
+        def comments?
+          (defined?(@leading_comments) && @leading_comments.any?) ||
+            (defined?(@trailing_comments) && @trailing_comments.any?)
+        end
+      end
+
+      # Extend the ToRuby visitor to be able to attach comments to the resulting
+      # Ruby objects.
+      module ToRuby
+        def accept(node)
+          result = super
+
+          if node.comments?
+            result =
+              YAMLCommentsDelegator.new(
+                result,
+                node.leading_comments,
+                node.trailing_comments
+              )
+          end
+
+          result
+        end
+      end
+    end
+
+    ::Psych::Handler.prepend(CommentExtensions::Handler)
+    ::Psych::TreeBuilder.prepend(CommentExtensions::TreeBuilder)
+    ::Psych::Handlers::DocumentStream.prepend(CommentExtensions::DocumentStream)
+    ::Psych::Nodes::Node.prepend(CommentExtensions::Node)
+    ::Psych::Visitors::ToRuby.prepend(CommentExtensions::ToRuby)
+
     # An internal exception is an exception that should not have occurred. It is
     # effectively an assertion.
     class InternalException < Exception
@@ -286,10 +486,14 @@ module Psych
         # insert the correct plain text prefix.
         @in_scalar = false
         @text_prefix = +""
+
+        # This parser can optionally parse comments and attach them to the
+        # resulting tree, if the option is passed.
+        @comments = false
       end
 
       # Top-level parse function that starts the parsing process.
-      def parse(yaml, filename = yaml.respond_to?(:path) ? yaml.path : "<unknown>")
+      def parse(yaml, filename = yaml.respond_to?(:path) ? yaml.path : "<unknown>", comments: false)
         if yaml.respond_to?(:read)
           yaml = yaml.read
         elsif !yaml.is_a?(String)
@@ -308,6 +512,7 @@ module Psych
         @scanner = StringScanner.new(yaml)
         @filename = filename
         @source = Source.new(yaml)
+        @comments = comments
 
         raise_syntax_error("Parser failed to complete") unless parse_l_yaml_stream
         raise_syntax_error("Parser finished before end of input") unless @scanner.eos?
@@ -774,8 +979,14 @@ module Psych
       # [075]
       # c-nb-comment-text ::=
       #   '#' nb-char*
-      def parse_c_nb_comment_text
-        try { match("#") && star { parse_nb_char } }
+      def parse_c_nb_comment_text(inline)
+        return false unless match("#")
+
+        pos = @scanner.pos - 1
+        star { parse_nb_char }
+
+        @handler.comment(from(pos), *Location.new(@source, pos, @scanner.pos), inline) if @comments
+        true
       end
 
       # [076]
@@ -794,7 +1005,7 @@ module Psych
         try do
           try do
             if parse_s_separate_in_line
-              parse_c_nb_comment_text
+              parse_c_nb_comment_text(true)
               true
             end
           end
@@ -810,7 +1021,7 @@ module Psych
       def parse_l_comment
         try do
           if parse_s_separate_in_line
-            parse_c_nb_comment_text
+            parse_c_nb_comment_text(false)
             parse_b_comment
           end
         end
@@ -2089,7 +2300,7 @@ module Psych
       def parse_l_trail_comments(n)
         try do
           parse_s_indent_lt(n) &&
-            parse_c_nb_comment_text &&
+            parse_c_nb_comment_text(false) &&
             parse_b_comment &&
             star { parse_l_comment }
         end
@@ -2778,10 +2989,12 @@ module Psych
       # aliases, since we may find that we need to add an anchor after the
       # object has already been flushed.
       class Node
-        attr_reader :value
+        attr_reader :value, :leading_comments, :trailing_comments
 
-        def initialize(value)
+        def initialize(value, leading_comments, trailing_comments)
           @value = value
+          @leading_comments = leading_comments
+          @trailing_comments = trailing_comments
           @anchor = nil
         end
 
@@ -2855,148 +3068,212 @@ module Psych
       # The visitor is responsible for walking the tree and generating the YAML
       # output.
       class Visitor
-        def initialize(prefix = "")
-          @prefix = prefix
+        def initialize(q)
+          @q = q
         end
 
         # Visit an AliasNode.
         def visit_alias(node)
-          "*#{node.value}"
+          with_comments(node) { |value| @q.text("*#{value}") }
         end
 
         # Visit an ArrayNode.
         def visit_array(node)
-          value = node.value
-          return (node.anchor ? "&#{node.anchor} []" : "[]") if value.empty?
+          with_comments(node) do |value|
+            if (anchor = node.anchor)
+              @q.text("&#{anchor} ")
+            end
 
-          outputs = []
-          next_visitor = Visitor.new("#{@prefix}  ")
-
-          node.value.each_with_index do |element, index|
-            output = +""
-
-            if index == 0
-              output << "&#{node.anchor} " if node.anchor
+            if value.empty?
+              @q.text("[]")
             else
-              output << @prefix
+              visit_array_contents(value)
             end
-
-            output << "-"
-
-            if !element.is_a?(NilNode)
-              output << " "
-              output << element.accept(next_visitor)
-            end
-
-            outputs << output
           end
-
-          outputs.join("\n")
         end
 
         # Visit a HashNode.
         def visit_hash(node)
-          value = node.value
-          return (node.anchor ? "&#{node.anchor} {}" : "{}") if value.empty?
-
-          outputs = []
-          next_prefix = "#{@prefix}  "
-
-          value.each_with_index do |(key, value), index|
-            output = +""
-
-            if index == 0
-              output << "&#{node.anchor}\n#{@prefix}" if node.anchor
-            else
-              output << @prefix
+          with_comments(node) do |value|
+            if (anchor = node.anchor)
+              @q.text("&#{anchor}")
             end
 
+            if value.empty?
+              @q.text(" ") if anchor
+              @q.text("{}")
+            else
+              @q.breakable if anchor
+              visit_hash_contents(value)
+            end
+          end
+        end
+
+        # Visit an ObjectNode.
+        def visit_object(node)
+          with_comments(node) do |value|
+            @q.text(Psych.dump(value, indentation: @q.indent)[/\A--- (.+)\n\z/m, 1]) # TODO
+          end
+        end
+
+        # Visit an OmapNode.
+        def visit_omap(node)
+          with_comments(node) do |value|
+            if (anchor = node.anchor)
+              @q.text("&#{anchor} ")
+            end
+
+            @q.text("!!omap")
+            @q.breakable
+
+            visit_array_contents(value)
+          end
+        end
+
+        # Visit a SetNode.
+        def visit_set(node)
+          with_comments(node) do |value|
+            if (anchor = node.anchor)
+              @q.text("&#{anchor} ")
+            end
+
+            @q.text("!set")
+            @q.breakable
+
+            visit_hash_contents(node.value)
+          end
+        end
+
+        # Visit a StringNode.
+        alias visit_string visit_object
+
+        private
+
+        # Shortcut to visit a node by passing this visitor to the accept method.
+        def visit(node)
+          node.accept(self)
+        end
+
+        # Visit the elements within an array.
+        def visit_array_contents(contents)
+          @q.seplist(contents, -> { @q.breakable }) do |element|
+            @q.text("-")
+            next if element.is_a?(NilNode)
+
+            @q.text(" ")
+            @q.nest(2) { visit(element) }
+          end
+        end
+
+        # Visit the key/value pairs within a hash.
+        def visit_hash_contents(contents)
+          @q.seplist(contents, -> { @q.breakable }) do |key, value|
             inlined = false
 
             case key
             when NilNode
-              output << "! ''"
+              @q.text("! ''")
             when ArrayNode, HashNode, OmapNode, SetNode
               if key.anchor.nil?
-                output << "? "
-                output << key.accept(Visitor.new("#{@prefix}  "))
-                output << "\n#{@prefix}"
+                @q.text("? ")
+                @q.nest(2) { visit(key) }
+                @q.breakable
                 inlined = true
               else
-                output << key.accept(self)
+                visit(key)
               end
             when AliasNode, ObjectNode
-              output << key.accept(self)
+              visit(key)
             when StringNode
               if key.value.include?("\n")
-                output << "? #{key.accept(self)}\n#{@prefix}"
+                @q.text("? ")
+                visit(key)
+                @q.breakable
                 inlined = true
               else
-                output << key.accept(self)
+                visit(key)
               end
             end
 
-            output << ":"
+            @q.text(":")
 
             case value
             when NilNode
               # skip
             when OmapNode, SetNode
-              output << " "
-              output << value.accept(Visitor.new(next_prefix))
+              @q.text(" ")
+              @q.nest(2) { visit(value) }
             when ArrayNode
               if value.value.empty?
-                output << " []"
+                @q.text(" []")
               elsif inlined || value.anchor
-                output << " "
-                output << value.accept(Visitor.new(next_prefix))
+                @q.text(" ")
+                @q.nest(2) { visit(value) }
               else
-                output << "\n#{@prefix}"
-                output << value.accept(Visitor.new(@prefix))
+                @q.breakable
+                visit(value)
               end
             when HashNode
               if value.value.empty?
-                output << " {}"
+                @q.text(" {}")
               elsif inlined || value.anchor
-                output << " "
-                output << value.accept(Visitor.new(next_prefix))
+                @q.text(" ")
+                @q.nest(2) { visit(value) }
               else
-                output << "\n#{next_prefix}"
-                output << value.accept(Visitor.new(next_prefix))
+                @q.nest(2) do
+                  @q.breakable
+                  visit(value)
+                end
               end
             when AliasNode, ObjectNode, StringNode
-              output << " "
-              output << value.accept(Visitor.new(next_prefix))
+              @q.text(" ")
+              @q.nest(2) { visit(value) }
+            end
+          end
+        end
+
+        # Print out the leading and trailing comments of a node, as well as
+        # yielding the value of the node to the block.
+        def with_comments(node)
+          node.leading_comments.each do |comment|
+            @q.text(comment.value)
+            @q.breakable
+          end
+
+          yield node.value
+
+          if (trailing_comments = node.trailing_comments).any?
+            if trailing_comments[0].inline?
+              inline_comment = trailing_comments.shift
+              @q.trailer { @q.text(" "); @q.text(inline_comment.value) }
             end
 
-            outputs << output
+            trailing_comments.each do |comment|
+              @q.breakable
+              @q.text(comment.value)
+            end
           end
-  
-          outputs.join("\n")
+        end
+      end
+
+      # This is a specialized pretty printer that knows how to format trailing
+      # comment.
+      class Formatter < PP
+        def breakable(sep = " ", width = sep.length)
+          (current_trailers = trailers).each(&:call)
+          current_trailers.clear
+          super(sep, width)
         end
 
-        # Visit an ObjectNode.
-        def visit_object(node)
-          Psych.dump(node.value, indentation: @prefix.length)[/\A--- (.+)\n\z/m, 1] # TODO
+        # These are blocks in the doc tree that should be flushed whenever we
+        # are about to flush a breakable.
+        def trailers
+          @trailers ||= []
         end
 
-        # Visit an OmapNode.
-        def visit_omap(node)
-          result = +""
-          result << "&#{node.anchor} " if node.anchor
-          result << "!!omap\n#{visit_array(node)}"
-        end
-
-        # Visit a SetNode.
-        def visit_set(node)
-          result = +""
-          result << "&#{node.anchor} " if node.anchor
-          result << "!set\n#{visit_hash(node)}"
-        end
-
-        # Visit a StringNode.
-        def visit_string(node)
-          Psych.dump(node.value, indentation: @prefix.length)[/\A--- (.+)\n\z/m, 1] # TODO
+        # Register a block to be called when the next breakable is flushed.
+        def trailer(&block)
+          trailers << block
         end
       end
 
@@ -3025,39 +3302,82 @@ module Psych
           @started = true
         end
 
-        @io <<
-          case (node = dump(object))
-          when ArrayNode, HashNode
-            "#{(node.value.empty? ? " " : "\n")}#{node.accept(Visitor.new)}\n"
-          when ObjectNode, OmapNode, SetNode, StringNode
-            " #{node.accept(Visitor.new)}\n"
-          when NilNode
-            "\n"
+        if (node = dump(object)).is_a?(NilNode)
+          @io << "\n"
+        else
+          q = Formatter.new(+"", 79, "\n") { |n| " " * n }
+
+          if (node.is_a?(ArrayNode) || node.is_a?(HashNode)) && !node.value.empty?
+            q.breakable
+          else
+            q.text(" ")
           end
+
+          node.accept(Visitor.new(q))
+          q.breakable
+          q.current_group.break
+          q.flush
+
+          @io << q.output
+        end
       end
 
       private
 
       # Walk through the given object and convert it into a tree of nodes.
-      def dump(object)
+      def dump(base_object)
+        object = base_object
+        leading_comments = []
+        trailing_comments = []
+
+        if base_object.is_a?(YAMLCommentsDelegator)
+          object = base_object.__getobj__
+          leading_comments.concat(base_object.yaml_leading_comments)
+          trailing_comments.concat(base_object.yaml_trailing_comments)
+        end
+
         if object.nil?
-          NilNode.new(nil)
+          NilNode.new(object, leading_comments, trailing_comments)
         elsif @object_nodes.key?(object)
-          AliasNode.new(@object_nodes[object].anchor = (@object_anchors[object] ||= (@object_anchor += 1)))
+          AliasNode.new(
+            @object_nodes[object].anchor = (@object_anchors[object] ||= (@object_anchor += 1)),
+            leading_comments,
+            trailing_comments
+          )
         else
           case object
           when Psych::Omap
-            @object_nodes[object] = OmapNode.new(object.map { |(key, value)| HashNode.new(dump(key) => dump(value)) })
+            @object_nodes[object] =
+              OmapNode.new(
+                object.map { |(key, value)| HashNode.new({ dump(key) => dump(value) }, [], []) },
+                leading_comments,
+                trailing_comments
+              )
           when Psych::Set
-            @object_nodes[object] = SetNode.new(object.to_h { |key, value| [dump(key), dump(value)] })
+            @object_nodes[object] =
+              SetNode.new(
+                object.to_h { |key, value| [dump(key), dump(value)] },
+                leading_comments,
+                trailing_comments
+              )
           when Array
-            @object_nodes[object] = ArrayNode.new(object.map { |element| dump(element) })
+            @object_nodes[object] =
+              ArrayNode.new(
+                object.map { |element| dump(element) },
+                leading_comments,
+                trailing_comments
+              )
           when Hash
-            @object_nodes[object] = HashNode.new(object.to_h { |key, value| [dump(key), dump(value)] })
+            @object_nodes[object] =
+              HashNode.new(
+                object.to_h { |key, value| [dump(key), dump(value)] },
+                leading_comments,
+                trailing_comments
+              )
           when String
-            StringNode.new(object)
+            StringNode.new(object, leading_comments, trailing_comments)
           else
-            ObjectNode.new(object)
+            ObjectNode.new(object, leading_comments, trailing_comments)
           end
         end
       end
@@ -3124,13 +3444,13 @@ module Psych
     end
 
     # Parse a YAML stream and return the root node.
-    def self.parse_stream(yaml, filename: nil, &block)
+    def self.parse_stream(yaml, filename: nil, comments: false, &block)
       if block_given?
         parser = Pure::Parser.new(Handlers::DocumentStream.new(&block))
-        parser.parse(yaml, filename)
+        parser.parse(yaml, filename, comments: comments)
       else
         parser = self.parser
-        parser.parse(yaml, filename)
+        parser.parse(yaml, filename, comments: comments)
         parser.handler.root
       end
     end
@@ -3174,14 +3494,14 @@ module Psych
     # :section: Public API copied directly from Psych
     # --------------------------------------------------------------------------
 
-    def self.unsafe_load yaml, filename: nil, fallback: false, symbolize_names: false, freeze: false, strict_integer: false
-      result = parse(yaml, filename: filename)
+    def self.unsafe_load yaml, filename: nil, fallback: false, symbolize_names: false, freeze: false, strict_integer: false, comments: false
+      result = parse(yaml, filename: filename, comments: comments)
       return fallback unless result
       result.to_ruby(symbolize_names: symbolize_names, freeze: freeze, strict_integer: strict_integer)
     end
 
-    def self.safe_load yaml, permitted_classes: [], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false
-      result = parse(yaml, filename: filename)
+    def self.safe_load yaml, permitted_classes: [], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, comments: false
+      result = parse(yaml, filename: filename, comments: comments)
       return fallback unless result
 
       class_loader = ClassLoader::Restricted.new(permitted_classes.map(&:to_s),
@@ -3196,7 +3516,7 @@ module Psych
       result
     end
 
-    def self.load yaml, permitted_classes: [Symbol], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false
+    def self.load yaml, permitted_classes: [Symbol], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, comments: false
       safe_load yaml, permitted_classes: permitted_classes,
                       permitted_symbols: permitted_symbols,
                       aliases: aliases,
@@ -3204,31 +3524,32 @@ module Psych
                       fallback: fallback,
                       symbolize_names: symbolize_names,
                       freeze: freeze,
-                      strict_integer: strict_integer
+                      strict_integer: strict_integer,
+                      comments: comments
     end
 
-    def self.parse yaml, filename: nil
-      parse_stream(yaml, filename: filename) do |node|
+    def self.parse yaml, filename: nil, comments: false
+      parse_stream(yaml, filename: filename, comments: comments) do |node|
         return node
       end
 
       false
     end
 
-    def self.parse_file filename, fallback: false
+    def self.parse_file filename, fallback: false, comments: false
       result = File.open filename, 'r:bom|utf-8' do |f|
-        parse f, filename: filename
+        parse f, filename: filename, comments: comments
       end
       result || fallback
     end
 
-    def self.load_stream yaml, filename: nil, fallback: [], **kwargs
+    def self.load_stream yaml, filename: nil, fallback: [], comments: false, **kwargs
       result = if block_given?
-                 parse_stream(yaml, filename: filename) do |node|
+                 parse_stream(yaml, filename: filename, comments: comments) do |node|
                    yield node.to_ruby(**kwargs)
                  end
                else
-                 parse_stream(yaml, filename: filename).children.map { |node| node.to_ruby(**kwargs) }
+                 parse_stream(yaml, filename: filename, comments: comments).children.map { |node| node.to_ruby(**kwargs) }
                end
 
       return fallback if result.is_a?(Array) && result.empty?
