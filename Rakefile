@@ -4,6 +4,15 @@ require "bundler/gem_tasks"
 require "rake/clean"
 require "rake/testtask"
 
+file "cpanfile" do
+  File.write("cpanfile", <<~PERL)
+    requires 'Capture::Tiny';
+    requires 'Pegex';
+    requires 'Tie::IxHash';
+    requires 'YAML::PP';
+  PERL
+end
+
 directory "tmp"
 
 directory "tmp/yaml-test-suite" => "tmp" do
