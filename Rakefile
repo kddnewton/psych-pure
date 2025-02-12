@@ -20,7 +20,7 @@ directory "tmp/yaml-test-suite" => "tmp" do
 end
 
 directory "tmp/yaml-test-suite/testml" => "tmp/yaml-test-suite" do
-  Dir.chdir("tmp/yaml-test-suite") { sh("make testml") }
+  chdir("tmp/yaml-test-suite") { sh("make testml") }
 end
 
 directory "tmp/testml" => "tmp" do
