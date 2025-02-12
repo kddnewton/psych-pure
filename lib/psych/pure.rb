@@ -2,6 +2,7 @@
 
 require "psych"
 require "strscan"
+require "stringio"
 
 module Psych
   # A YAML parser written in Ruby.
@@ -2769,6 +2770,350 @@ module Psych
       end
     end
 
+    # The emitter is responsible for taking Ruby objects and converting them
+    # into YAML documents.
+    class Emitter
+      # The base class for all emitter nodes. We need to build a tree of nodes
+      # here in order to support dumping repeated objects as anchors and
+      # aliases, since we may find that we need to add an anchor after the
+      # object has already been flushed.
+      class Node
+        attr_reader :value
+
+        def initialize(value)
+          @value = value
+          @anchor = nil
+        end
+
+        def accept(visitor)
+          raise
+        end
+      end
+
+      # Represents an alias to another node in the tree.
+      class AliasNode < Node
+        def accept(visitor)
+          visitor.visit_alias(self)
+        end
+      end
+
+      # Represents an array of nodes.
+      class ArrayNode < Node
+        attr_accessor :anchor
+
+        def accept(visitor)
+          visitor.visit_array(self)
+        end
+      end
+
+      # Represents a hash of nodes.
+      class HashNode < Node
+        attr_accessor :anchor
+
+        def accept(visitor)
+          visitor.visit_hash(self)
+        end
+      end
+
+      # Represents the nil value.
+      class NilNode < Node
+      end
+
+      # Represents a generic object that is not matched by any of the other node
+      # types.
+      class ObjectNode < Node
+        def accept(visitor)
+          visitor.visit_object(self)
+        end
+      end
+
+      # Represents a Psych::Omap object.
+      class OmapNode < Node
+        attr_accessor :anchor
+
+        def accept(visitor)
+          visitor.visit_omap(self)
+        end
+      end
+
+      # Represents a Psych::Set object.
+      class SetNode < Node
+        attr_accessor :anchor
+
+        def accept(visitor)
+          visitor.visit_set(self)
+        end
+      end
+
+      # Represents a string object.
+      class StringNode < Node
+        def accept(visitor)
+          visitor.visit_string(self)
+        end
+      end
+
+      # The visitor is responsible for walking the tree and generating the YAML
+      # output.
+      class Visitor
+        def initialize(prefix = "")
+          @prefix = prefix
+        end
+
+        # Visit an AliasNode.
+        def visit_alias(node)
+          "*#{node.value}"
+        end
+
+        # Visit an ArrayNode.
+        def visit_array(node)
+          value = node.value
+          return (node.anchor ? "&#{node.anchor} []" : "[]") if value.empty?
+
+          outputs = []
+          next_visitor = Visitor.new("#{@prefix}  ")
+
+          node.value.each_with_index do |element, index|
+            output = +""
+
+            if index == 0
+              output << "&#{node.anchor} " if node.anchor
+            else
+              output << @prefix
+            end
+
+            output << "-"
+
+            if !element.is_a?(NilNode)
+              output << " "
+              output << element.accept(next_visitor)
+            end
+
+            outputs << output
+          end
+
+          outputs.join("\n")
+        end
+
+        # Visit a HashNode.
+        def visit_hash(node)
+          value = node.value
+          return (node.anchor ? "&#{node.anchor} {}" : "{}") if value.empty?
+
+          outputs = []
+          next_prefix = "#{@prefix}  "
+
+          value.each_with_index do |(key, value), index|
+            output = +""
+
+            if index == 0
+              output << "&#{node.anchor}\n#{@prefix}" if node.anchor
+            else
+              output << @prefix
+            end
+
+            inlined = false
+
+            case key
+            when NilNode
+              output << "! ''"
+            when ArrayNode, HashNode, OmapNode, SetNode
+              if key.anchor.nil?
+                output << "? "
+                output << key.accept(Visitor.new("#{@prefix}  "))
+                output << "\n#{@prefix}"
+                inlined = true
+              else
+                output << key.accept(self)
+              end
+            when AliasNode, ObjectNode
+              output << key.accept(self)
+            when StringNode
+              if key.value.include?("\n")
+                output << "? #{key.accept(self)}\n#{@prefix}"
+                inlined = true
+              else
+                output << key.accept(self)
+              end
+            end
+
+            output << ":"
+
+            case value
+            when NilNode
+              # skip
+            when OmapNode, SetNode
+              output << " "
+              output << value.accept(Visitor.new(next_prefix))
+            when ArrayNode
+              if value.value.empty?
+                output << " []"
+              elsif inlined || value.anchor
+                output << " "
+                output << value.accept(Visitor.new(next_prefix))
+              else
+                output << "\n#{@prefix}"
+                output << value.accept(Visitor.new(@prefix))
+              end
+            when HashNode
+              if value.value.empty?
+                output << " {}"
+              elsif inlined || value.anchor
+                output << " "
+                output << value.accept(Visitor.new(next_prefix))
+              else
+                output << "\n#{next_prefix}"
+                output << value.accept(Visitor.new(next_prefix))
+              end
+            when AliasNode, ObjectNode, StringNode
+              output << " "
+              output << value.accept(Visitor.new(next_prefix))
+            end
+
+            outputs << output
+          end
+  
+          outputs.join("\n")
+        end
+
+        # Visit an ObjectNode.
+        def visit_object(node)
+          Psych.dump(node.value, indentation: @prefix.length)[/\A--- (.+)\n\z/m, 1] # TODO
+        end
+
+        # Visit an OmapNode.
+        def visit_omap(node)
+          result = +""
+          result << "&#{node.anchor} " if node.anchor
+          result << "!!omap\n#{visit_array(node)}"
+        end
+
+        # Visit a SetNode.
+        def visit_set(node)
+          result = +""
+          result << "&#{node.anchor} " if node.anchor
+          result << "!set\n#{visit_hash(node)}"
+        end
+
+        # Visit a StringNode.
+        def visit_string(node)
+          Psych.dump(node.value, indentation: @prefix.length)[/\A--- (.+)\n\z/m, 1] # TODO
+        end
+      end
+
+      # Initialize a new emitter with the given io and options.
+      def initialize(io, options)
+        @io = io || $stdout
+        @options = options
+        @started = false
+
+        # These three instance variables are used to support dumping repeated
+        # objects. When the same object is found more than once, we switch to
+        # using an anchor and an alias.
+        @object_nodes = {}.compare_by_identity
+        @object_anchors = {}.compare_by_identity
+        @object_anchor = 0
+      end
+
+      # This is the main entrypoint into this object. It is responsible for
+      # pushing a new object onto the emitter, which is then represented as a
+      # YAML document.
+      def <<(object)
+        if @started
+          @io << "...\n---"
+        else
+          @io << "---"
+          @started = true
+        end
+
+        @io <<
+          case (node = dump(object))
+          when ArrayNode, HashNode
+            "#{(node.value.empty? ? " " : "\n")}#{node.accept(Visitor.new)}\n"
+          when ObjectNode, OmapNode, SetNode, StringNode
+            " #{node.accept(Visitor.new)}\n"
+          when NilNode
+            "\n"
+          end
+      end
+
+      private
+
+      # Walk through the given object and convert it into a tree of nodes.
+      def dump(object)
+        if object.nil?
+          NilNode.new(nil)
+        elsif @object_nodes.key?(object)
+          AliasNode.new(@object_nodes[object].anchor = (@object_anchors[object] ||= (@object_anchor += 1)))
+        else
+          case object
+          when Psych::Omap
+            @object_nodes[object] = OmapNode.new(object.map { |(key, value)| HashNode.new(dump(key) => dump(value)) })
+          when Psych::Set
+            @object_nodes[object] = SetNode.new(object.to_h { |key, value| [dump(key), dump(value)] })
+          when Array
+            @object_nodes[object] = ArrayNode.new(object.map { |element| dump(element) })
+          when Hash
+            @object_nodes[object] = HashNode.new(object.to_h { |key, value| [dump(key), dump(value)] })
+          when String
+            StringNode.new(object)
+          else
+            ObjectNode.new(object)
+          end
+        end
+      end
+    end
+
+    # A safe emitter is a subclass of the emitter that restricts the types of
+    # objects that can be serialized.
+    class SafeEmitter < Emitter
+      DEFAULT_PERMITTED_CLASSES = {
+        TrueClass => true,
+        FalseClass => true,
+        NilClass => true,
+        Integer => true,
+        Float => true,
+        String => true,
+        Array => true,
+        Hash => true,
+      }.compare_by_identity.freeze
+
+      # Initialize a new safe emitter with the given io and options.
+      def initialize(io, options)
+        super(io, options)
+
+        @permitted_classes = DEFAULT_PERMITTED_CLASSES.dup
+        Array(options[:permitted_classes]).each do |klass|
+          @permitted_classes[klass] = true
+        end
+
+        @permitted_symbols = {}.compare_by_identity
+        Array(options[:permitted_symbols]).each do |symbol|
+          @permitted_symbols[symbol] = true
+        end
+
+        @aliases = options.fetch(:aliases, false)
+      end
+
+      private
+
+      # Dump the given object, ensuring that it is a permitted object.
+      def dump(object)
+        if !@aliases && @object_nodes.key?(object)
+          raise BadAlias, "Tried to dump an aliased object"
+        end
+
+        if Symbol === object
+          if !@permitted_classes[Symbol] || !@permitted_symbols[object]
+            raise DisallowedClass.new("dump", "Symbol(#{object.inspect})")
+          end
+        elsif !@permitted_classes[object.class]
+          raise DisallowedClass.new("dump", object.class.name || object.class.inspect)
+        end
+
+        super
+      end
+    end
+
     # --------------------------------------------------------------------------
     # :section: Public API specific to Psych::Pure
     # --------------------------------------------------------------------------
@@ -2788,6 +3133,41 @@ module Psych
         parser.parse(yaml, filename)
         parser.handler.root
       end
+    end
+
+    # Dump an object to a YAML string.
+    def self.dump(o, io = nil, options = {})
+      if Hash === io
+        options = io
+        io = nil
+      end
+
+      real_io = io || StringIO.new
+      emitter = Emitter.new(real_io, options)
+      emitter << o
+      io || real_io.string
+    end
+
+    # Dump an object to a YAML string, with restricted classes, symbols, and
+    # aliases.
+    def self.safe_dump(o, io = nil, options = {})
+      if Hash === io
+        options = io
+        io = nil
+      end
+
+      real_io = io || StringIO.new
+      emitter = SafeEmitter.new(real_io, options)
+      emitter << o
+      io || real_io.string
+    end
+
+    # Dump a stream of objects to a YAML string.
+    def self.dump_stream(*objects)
+      real_io = io || StringIO.new
+      emitter = Emitter.new(real_io, {})
+      objects.each { |object| emitter << object }
+      io || real_io.string
     end
 
     # --------------------------------------------------------------------------
