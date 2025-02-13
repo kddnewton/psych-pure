@@ -41,7 +41,7 @@ Or install it yourself as:
 
 All of the various `parse` APIs come with the additional `comments:` keyword option. This option tells the parser to parse out comments and attach them to the resulting tree. Nodes in the tree are then responsible for maintaining their own leading and trailing comments.
 
-All of the various `load` APIs also come with the additional `comments:` keyword option. This also gets fed into the parser. Because `load` is responsible for loading Ruby objects, the comments are then attached to the loaded objects via `Psych::Pure::YAMLCommentsDelegator`, which is a `SimpleDelegator` that wraps the objects and stores the leading and trailing comments. Those objects are then taken into account in the various `dump` APIs to dump out the comments as well. For example:
+All of the various `load` APIs also come with the additional `comments:` keyword option. This also gets fed into the parser. Because `load` is responsible for loading Ruby objects, the comments are then attached to the loaded objects via delegators that wraps the objects and stores the leading and trailing comments. Those objects are then taken into account in the various `dump` APIs to dump out the comments as well. For example:
 
 ```ruby
 result = Psych::Pure.load("- a # comment1\n- c # comment2\n", comments: true)

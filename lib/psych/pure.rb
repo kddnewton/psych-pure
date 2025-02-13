@@ -9,33 +9,185 @@ require "stringio"
 module Psych
   # A YAML parser written in Ruby.
   module Pure
+    # An internal exception is an exception that should not have occurred. It is
+    # effectively an assertion.
+    class InternalException < Exception
+      def initialize(message = "An internal exception occurred")
+        super(message)
+      end
+    end
+
+    # A source is wraps the input string and provides methods to access line and
+    # column information from a byte offset.
+    class Source
+      def initialize(string)
+        @line_offsets = []
+        @trimmable_lines = []
+
+        offset = 0
+        string.each_line do |line|
+          @line_offsets << offset
+          @trimmable_lines << line.match?(/\A(?: *#.*)?\n\z/)
+          offset += line.bytesize
+        end
+
+        @line_offsets << offset
+        @trimmable_lines << true
+      end
+
+      def trim(offset)
+        while (l = line(offset)) != 0 && (offset == @line_offsets[l]) && @trimmable_lines[l - 1]
+          offset = @line_offsets[l - 1]
+        end
+
+        offset
+      end
+
+      def line(offset)
+        index = @line_offsets.bsearch_index { |line_offset| line_offset > offset }
+        return @line_offsets.size - 1 if index.nil?
+        index - 1
+      end
+
+      def column(offset)
+        offset - @line_offsets[line(offset)]
+      end
+    end
+
+    # A location represents a range of bytes in the input string.
+    class Location
+      protected attr_reader :pos_end
+
+      def initialize(source, pos_start, pos_end)
+        @source = source
+        @pos_start = pos_start
+        @pos_end = pos_end
+      end
+
+      def start_line
+        @source.line(@pos_start)
+      end
+
+      def start_column
+        @source.column(@pos_start)
+      end
+
+      def end_line
+        @source.line(@pos_end)
+      end
+
+      def end_column
+        @source.column(@pos_end)
+      end
+
+      def join(other)
+        @pos_end = other.pos_end
+      end
+
+      # Trim trailing whitespace and comments from this location.
+      def trim
+        Location.new(@source, @pos_start, @source.trim(@pos_end))
+      end
+
+      def to_a
+        [start_line, start_column, end_line, end_column]
+      end
+
+      def self.point(source, pos)
+        new(source, pos, pos)
+      end
+    end
+
     # Represents a comment in the input.
     class Comment
-      attr_reader :value, :start_line, :start_column, :end_line, :end_column
+      attr_reader :location, :value
 
-      def initialize(value, start_line, start_column, end_line, end_column, inline)
+      def initialize(location, value, inline)
+        @location = location
         @value = value
-        @start_line = start_line
-        @start_column = start_column
-        @end_line = end_line
-        @end_column = end_column
         @inline = inline
       end
 
       def inline?
         @inline
       end
+
+      def start_line
+        location.start_line
+      end
+
+      def start_column
+        location.start_column
+      end
+
+      def end_line
+        location.end_line
+      end
+
+      def end_column
+        location.end_column
+      end
     end
 
-    # Wraps a Ruby object with its leading and trailing YAML comments from the
-    # source input.
-    class YAMLCommentsDelegator < SimpleDelegator
-      attr_reader :yaml_leading_comments, :yaml_trailing_comments
+    # Represents the set of comments on a node.
+    class Comments
+      attr_reader :leading, :trailing
 
-      def initialize(object, yaml_leading_comments, yaml_trailing_comments)
+      def initialize
+        @leading = []
+        @trailing = []
+      end
+
+      def leading_comment(comment)
+        @leading << comment
+      end
+
+      def trailing_comment(comment)
+        @trailing << comment
+      end
+    end
+
+    # Wraps a Ruby object with its comments from the source input.
+    class CommentsObject < SimpleDelegator
+      attr_reader :psych_comments
+
+      def initialize(object, psych_comments)
+        @psych_comments = psych_comments
         super(object)
-        @yaml_leading_comments = yaml_leading_comments
-        @yaml_trailing_comments = yaml_trailing_comments
+      end
+    end
+
+    # Wraps a Ruby hash with its comments from the source input.
+    class CommentsHash < SimpleDelegator
+      attr_reader :psych_comments, :psych_key_comments
+
+      def initialize(object, psych_comments, psych_key_comments = {})
+        @psych_comments = psych_comments
+        @psych_key_comments = psych_key_comments
+        commentless = {}
+
+        object.each do |key, value|
+          if key.is_a?(CommentsObject)
+            @psych_key_comments[key.__getobj__] = key.psych_comments
+            commentless[key.__getobj__] = value
+          else
+            commentless[key] = value
+          end
+        end
+
+        super(commentless)
+      end
+
+      def []=(key, value)
+        if (previous = self[key])
+          if previous.is_a?(CommentsObject)
+            value = CommentsObject.new(value, previous.psych_comments)
+          elsif previous.is_a?(CommentsHash)
+            value = CommentsHash.new(value, previous.psych_comments, previous.psych_key_comments)
+          end
+        end
+
+        super(key, value)
       end
     end
 
@@ -45,7 +197,7 @@ module Psych
       # Extend the Handler to be able to handle comments coming out of the
       # parser.
       module Handler
-        def comment(value, start_line, start_column, end_line, end_column, inline)
+        def comment(value)
         end
       end
 
@@ -55,8 +207,8 @@ module Psych
           @comments ||= []
         end
 
-        def comment(value, start_line, start_column, end_line, end_column, inline)
-          comments << Comment.new(value, start_line, start_column, end_line, end_column, inline)
+        def comment(value)
+          comments << value
         end
 
         def end_stream
@@ -96,10 +248,11 @@ module Psych
           preceding = nil
           following = nil
 
-          comment_start_line = comment.start_line
-          comment_start_column = comment.start_column
-          comment_end_line = comment.end_line
-          comment_end_column = comment.end_column
+          location = comment.location
+          comment_start_line = location.start_line
+          comment_start_column = location.start_column
+          comment_end_line = location.end_line
+          comment_end_column = location.end_column
 
           left = 0
           right = candidates.length
@@ -159,44 +312,58 @@ module Psych
 
       # Extend the nodes to be able to store comments.
       module Node
-        def leading_comments
-          @leading_comments ||= []
-        end
-
         def leading_comment(comment)
-          leading_comments << comment
-        end
-
-        def trailing_comments
-          @trailing_comments ||= []
+          comments.leading_comment(comment)
         end
 
         def trailing_comment(comment)
-          trailing_comments << comment
+          comments.trailing_comment(comment)
+        end
+
+        def comments
+          @comments ||= Comments.new
         end
 
         def comments?
-          (defined?(@leading_comments) && @leading_comments.any?) ||
-            (defined?(@trailing_comments) && @trailing_comments.any?)
+          defined?(@comments)
+        end
+
+        def to_ruby(symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+          Visitors::ToRuby.create(symbolize_names: symbolize_names, freeze: freeze, strict_integer: strict_integer, comments: comments).accept(self)
         end
       end
 
       # Extend the ToRuby visitor to be able to attach comments to the resulting
       # Ruby objects.
       module ToRuby
+        attr_reader :comments
+
+        def initialize(ss, class_loader, symbolize_names: false, freeze: false, comments: false)
+          super(ss, class_loader, symbolize_names: symbolize_names, freeze: freeze)
+          @comments = comments
+        end
+
         def accept(node)
           result = super
 
-          if node.comments?
-            result =
-              YAMLCommentsDelegator.new(
-                result,
-                node.leading_comments,
-                node.trailing_comments
-              )
+          if @comments
+            if result.is_a?(Hash)
+              result = CommentsHash.new(result, node.comments? ? node.comments : nil)
+            elsif node.comments?
+              result = CommentsObject.new(result, node.comments)
+            end
           end
 
           result
+        end
+      end
+
+      # Extend the ToRuby singleton to be able to pass the comments option.
+      module ToRubySingleton
+        def create(symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+          class_loader = ClassLoader.new
+          scanner      = ScalarScanner.new(class_loader, strict_integer: strict_integer)
+          new(scanner, class_loader, symbolize_names: symbolize_names, freeze: freeze, comments: comments)
         end
       end
     end
@@ -206,68 +373,7 @@ module Psych
     ::Psych::Handlers::DocumentStream.prepend(CommentExtensions::DocumentStream)
     ::Psych::Nodes::Node.prepend(CommentExtensions::Node)
     ::Psych::Visitors::ToRuby.prepend(CommentExtensions::ToRuby)
-
-    # An internal exception is an exception that should not have occurred. It is
-    # effectively an assertion.
-    class InternalException < Exception
-      def initialize(message = "An internal exception occurred")
-        super(message)
-      end
-    end
-
-    # A source is wraps the input string and provides methods to access line and
-    # column information from a byte offset.
-    class Source
-      def initialize(string)
-        @line_offsets = []
-
-        offset = 0
-        string.each_line do |line|
-          @line_offsets << offset
-          offset += line.bytesize
-        end
-
-        @line_offsets << offset
-      end
-
-      def line(offset)
-        index = @line_offsets.bsearch_index { |line_offset| line_offset > offset }
-        return @line_offsets.size - 1 if index.nil?
-        index - 1
-      end
-
-      def column(offset)
-        offset - @line_offsets[line(offset)]
-      end
-    end
-
-    # A location represents a range of bytes in the input string.
-    class Location
-      protected attr_reader :pos_end
-
-      def initialize(source, pos_start, pos_end)
-        @source = source
-        @pos_start = pos_start
-        @pos_end = pos_end
-      end
-
-      def join(other)
-        @pos_end = other.pos_end
-      end
-
-      def to_a
-        [
-          @source.line(@pos_start),
-          @source.column(@pos_start),
-          @source.line(@pos_end),
-          @source.column(@pos_end)
-        ]
-      end
-
-      def self.point(source, pos)
-        new(source, pos, pos)
-      end
-    end
+    ::Psych::Visitors::ToRuby.singleton_class.prepend(CommentExtensions::ToRubySingleton)
 
     # An alias event represents a reference to a previously defined anchor.
     class Alias
@@ -349,7 +455,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.trim)
         handler.end_mapping
       end
     end
@@ -409,7 +515,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.trim)
         handler.end_sequence
       end
     end
@@ -489,7 +595,7 @@ module Psych
 
         # This parser can optionally parse comments and attach them to the
         # resulting tree, if the option is passed.
-        @comments = false
+        @comments = nil
       end
 
       # Top-level parse function that starts the parsing process.
@@ -512,10 +618,12 @@ module Psych
         @scanner = StringScanner.new(yaml)
         @filename = filename
         @source = Source.new(yaml)
-        @comments = comments
+        @comments = {} if comments
 
         raise_syntax_error("Parser failed to complete") unless parse_l_yaml_stream
         raise_syntax_error("Parser finished before end of input") unless @scanner.eos?
+
+        @comments = nil if comments
         true
       end
 
@@ -621,10 +729,18 @@ module Psych
       # :section: Event handling
       # ------------------------------------------------------------------------
 
+      # Flush the comments into the handler once we get to a safe point.
+      def comments_flush
+        return unless @comments
+        @comments.each { |_, comment| @handler.comment(comment) }
+        @comments.clear
+      end
+
       # If there is a document end event, then flush it to the list of events
       # and reset back to the starting state to parse the next document.
       def document_end_event_flush
         if @document_end_event
+          comments_flush
           @document_end_event.accept(@handler)
           @document_start_event = DocumentStart.new(Location.point(@source, @scanner.pos))
           @tag_directives = @document_start_event.tag_directives
@@ -985,7 +1101,7 @@ module Psych
         pos = @scanner.pos - 1
         star { parse_nb_char }
 
-        @handler.comment(from(pos), *Location.new(@source, pos, @scanner.pos), inline) if @comments
+        @comments[pos] ||= Comment.new(Location.new(@source, pos, @scanner.pos), from(pos), inline) if @comments
         true
       end
 
@@ -2623,7 +2739,7 @@ module Psych
 
         if try { plus { try { parse_s_indent(n + m) && parse_ns_l_block_map_entry(n + m) } } }
           events_cache_flush
-          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
+          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos))) # TODO
           true
         else
           events_cache_pop
@@ -2739,7 +2855,7 @@ module Psych
           star { try { parse_s_indent(n) && parse_ns_l_block_map_entry(n) } }
         } then
           events_cache_flush
-          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
+          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos))) # TODO
           true
         else
           events_cache_pop
@@ -2989,12 +3105,11 @@ module Psych
       # aliases, since we may find that we need to add an anchor after the
       # object has already been flushed.
       class Node
-        attr_reader :value, :leading_comments, :trailing_comments
+        attr_reader :value, :comments
 
-        def initialize(value, leading_comments, trailing_comments)
+        def initialize(value, comments)
           @value = value
-          @leading_comments = leading_comments
-          @trailing_comments = trailing_comments
+          @comments = comments
           @anchor = nil
         end
 
@@ -3235,22 +3350,48 @@ module Psych
         # Print out the leading and trailing comments of a node, as well as
         # yielding the value of the node to the block.
         def with_comments(node)
-          node.leading_comments.each do |comment|
-            @q.text(comment.value)
+          if (comments = node.comments) && (leading = comments.leading).any?
+            line = nil
+
+            leading.each do |comment|
+              while line && line < comment.start_line
+                @q.breakable
+                line += 1
+              end
+
+              @q.text(comment.value)
+              line = comment.end_line
+            end
+
             @q.breakable
           end
 
           yield node.value
 
-          if (trailing_comments = node.trailing_comments).any?
-            if trailing_comments[0].inline?
-              inline_comment = trailing_comments.shift
+          if comments && (trailing = comments.trailing).any?
+            line = nil
+            index = 0
+
+            if trailing[0].inline?
+              inline_comment = trailing[0]
+              index += 1
+
               @q.trailer { @q.text(" "); @q.text(inline_comment.value) }
+              line = inline_comment.end_line
             end
 
-            trailing_comments.each do |comment|
-              @q.breakable
+            trailing[index..-1].each do |comment|
+              if line.nil?
+                @q.breakable
+              else
+                while line < comment.start_line
+                  @q.breakable
+                  line += 1
+                end
+              end
+
               @q.text(comment.value)
+              line = comment.end_line
             end
           end
         end
@@ -3325,59 +3466,39 @@ module Psych
       private
 
       # Walk through the given object and convert it into a tree of nodes.
-      def dump(base_object)
+      def dump(base_object, comments = nil)
         object = base_object
-        leading_comments = []
-        trailing_comments = []
 
-        if base_object.is_a?(YAMLCommentsDelegator)
+        if base_object.is_a?(CommentsObject) || base_object.is_a?(CommentsHash)
           object = base_object.__getobj__
-          leading_comments.concat(base_object.yaml_leading_comments)
-          trailing_comments.concat(base_object.yaml_trailing_comments)
+          comments = base_object.psych_comments
         end
 
         if object.nil?
-          NilNode.new(object, leading_comments, trailing_comments)
+          NilNode.new(object, comments)
         elsif @object_nodes.key?(object)
-          AliasNode.new(
-            @object_nodes[object].anchor = (@object_anchors[object] ||= (@object_anchor += 1)),
-            leading_comments,
-            trailing_comments
-          )
+          AliasNode.new(@object_nodes[object].anchor = (@object_anchors[object] ||= (@object_anchor += 1)), comments)
         else
           case object
           when Psych::Omap
-            @object_nodes[object] =
-              OmapNode.new(
-                object.map { |(key, value)| HashNode.new({ dump(key) => dump(value) }, [], []) },
-                leading_comments,
-                trailing_comments
-              )
+            @object_nodes[object] = OmapNode.new(object.map { |(key, value)| HashNode.new({ dump(key) => dump(value) }, nil) }, comments)
           when Psych::Set
-            @object_nodes[object] =
-              SetNode.new(
-                object.to_h { |key, value| [dump(key), dump(value)] },
-                leading_comments,
-                trailing_comments
-              )
+            @object_nodes[object] = SetNode.new(object.to_h { |key, value| [dump(key), dump(value)] }, comments)
           when Array
-            @object_nodes[object] =
-              ArrayNode.new(
-                object.map { |element| dump(element) },
-                leading_comments,
-                trailing_comments
-              )
+            @object_nodes[object] = ArrayNode.new(object.map { |element| dump(element) }, comments)
           when Hash
-            @object_nodes[object] =
-              HashNode.new(
-                object.to_h { |key, value| [dump(key), dump(value)] },
-                leading_comments,
-                trailing_comments
-              )
+            dumped =
+              if base_object.is_a?(CommentsHash)
+                object.to_h { |key, value| [dump(key, base_object.psych_key_comments[key]), dump(value)] }
+              else
+                object.to_h { |key, value| [dump(key), dump(value)] }
+              end
+
+            @object_nodes[object] = HashNode.new(dumped, comments)
           when String
-            StringNode.new(object, leading_comments, trailing_comments)
+            StringNode.new(object, comments)
           else
-            ObjectNode.new(object, leading_comments, trailing_comments)
+            ObjectNode.new(object, comments)
           end
         end
       end
@@ -3417,7 +3538,13 @@ module Psych
       private
 
       # Dump the given object, ensuring that it is a permitted object.
-      def dump(object)
+      def dump(base_object, comments = nil)
+        object = base_object
+
+        if base_object.is_a?(CommentsObject) || base_object.is_a?(CommentsHash)
+          object = base_object.__getobj__
+        end
+
         if !@aliases && @object_nodes.key?(object)
           raise BadAlias, "Tried to dump an aliased object"
         end
@@ -3435,12 +3562,28 @@ module Psych
     end
 
     # --------------------------------------------------------------------------
-    # :section: Public API specific to Psych::Pure
+    # :section: Public API mirroring Psych
     # --------------------------------------------------------------------------
 
     # Create a new default parser.
     def self.parser
       Pure::Parser.new(TreeBuilder.new)
+    end
+
+    def self.parse(yaml, filename: nil, comments: false)
+      parse_stream(yaml, filename: filename, comments: comments) do |node|
+        return node
+      end
+
+      false
+    end
+
+    def self.parse_file(filename, fallback: false, comments: false)
+      result = File.open(filename, "r:bom|utf-8") do |f|
+        parse(f, filename: filename, comments: comments)
+      end
+
+      result || fallback
     end
 
     # Parse a YAML stream and return the root node.
@@ -3452,6 +3595,76 @@ module Psych
         parser = self.parser
         parser.parse(yaml, filename, comments: comments)
         parser.handler.root
+      end
+    end
+
+    def self.unsafe_load(yaml, filename: nil, fallback: false, symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+      result = parse(yaml, filename: filename, comments: comments)
+      return fallback unless result
+
+      result.to_ruby(symbolize_names: symbolize_names, freeze: freeze, strict_integer: strict_integer, comments: comments)
+    end
+
+    def self.safe_load(yaml, permitted_classes: [], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+      result = parse(yaml, filename: filename, comments: comments)
+      return fallback unless result
+
+      class_loader = ClassLoader::Restricted.new(permitted_classes.map(&:to_s), permitted_symbols.map(&:to_s))
+      scanner = ScalarScanner.new(class_loader, strict_integer: strict_integer)
+      visitor =
+        if aliases
+          Visitors::ToRuby.new(scanner, class_loader, symbolize_names: symbolize_names, freeze: freeze, comments: comments)
+        else
+          Visitors::NoAliasRuby.new(scanner, class_loader, symbolize_names: symbolize_names, freeze: freeze, comments: comments)
+        end
+
+      visitor.accept(result)
+    end
+
+    def self.load(yaml, permitted_classes: [Symbol], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+      safe_load(
+        yaml,
+        permitted_classes: permitted_classes,
+        permitted_symbols: permitted_symbols,
+        aliases: aliases,
+        filename: filename,
+        fallback: fallback,
+        symbolize_names: symbolize_names,
+        freeze: freeze,
+        strict_integer: strict_integer,
+        comments: comments
+      )
+    end
+
+    def self.load_stream(yaml, filename: nil, fallback: [], comments: false, **kwargs)
+      result =
+        if block_given?
+          parse_stream(yaml, filename: filename, comments: comments) do |node|
+            yield node.to_ruby(**kwargs)
+          end
+        else
+          parse_stream(yaml, filename: filename, comments: comments).children.map { |node| node.to_ruby(**kwargs) }
+        end
+
+      return fallback if result.is_a?(Array) && result.empty?
+      result
+    end
+
+    def self.unsafe_load_file(filename, **kwargs)
+      File.open(filename, "r:bom|utf-8") do |f|
+        self.unsafe_load(f, filename: filename, **kwargs)
+      end
+    end
+
+    def self.safe_load_file(filename, **kwargs)
+      File.open(filename, "r:bom|utf-8") do |f|
+        self.safe_load(f, filename: filename, **kwargs)
+      end
+    end
+
+    def self.load_file(filename, **kwargs)
+      File.open(filename, "r:bom|utf-8") do |f|
+        self.load(f, filename: filename, **kwargs)
       end
     end
 
@@ -3488,90 +3701,6 @@ module Psych
       emitter = Emitter.new(real_io, {})
       objects.each { |object| emitter << object }
       io || real_io.string
-    end
-
-    # --------------------------------------------------------------------------
-    # :section: Public API copied directly from Psych
-    # --------------------------------------------------------------------------
-
-    def self.unsafe_load yaml, filename: nil, fallback: false, symbolize_names: false, freeze: false, strict_integer: false, comments: false
-      result = parse(yaml, filename: filename, comments: comments)
-      return fallback unless result
-      result.to_ruby(symbolize_names: symbolize_names, freeze: freeze, strict_integer: strict_integer)
-    end
-
-    def self.safe_load yaml, permitted_classes: [], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, comments: false
-      result = parse(yaml, filename: filename, comments: comments)
-      return fallback unless result
-
-      class_loader = ClassLoader::Restricted.new(permitted_classes.map(&:to_s),
-                                                 permitted_symbols.map(&:to_s))
-      scanner      = ScalarScanner.new class_loader, strict_integer: strict_integer
-      visitor = if aliases
-                  Visitors::ToRuby.new scanner, class_loader, symbolize_names: symbolize_names, freeze: freeze
-                else
-                  Visitors::NoAliasRuby.new scanner, class_loader, symbolize_names: symbolize_names, freeze: freeze
-                end
-      result = visitor.accept result
-      result
-    end
-
-    def self.load yaml, permitted_classes: [Symbol], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, comments: false
-      safe_load yaml, permitted_classes: permitted_classes,
-                      permitted_symbols: permitted_symbols,
-                      aliases: aliases,
-                      filename: filename,
-                      fallback: fallback,
-                      symbolize_names: symbolize_names,
-                      freeze: freeze,
-                      strict_integer: strict_integer,
-                      comments: comments
-    end
-
-    def self.parse yaml, filename: nil, comments: false
-      parse_stream(yaml, filename: filename, comments: comments) do |node|
-        return node
-      end
-
-      false
-    end
-
-    def self.parse_file filename, fallback: false, comments: false
-      result = File.open filename, 'r:bom|utf-8' do |f|
-        parse f, filename: filename, comments: comments
-      end
-      result || fallback
-    end
-
-    def self.load_stream yaml, filename: nil, fallback: [], comments: false, **kwargs
-      result = if block_given?
-                 parse_stream(yaml, filename: filename, comments: comments) do |node|
-                   yield node.to_ruby(**kwargs)
-                 end
-               else
-                 parse_stream(yaml, filename: filename, comments: comments).children.map { |node| node.to_ruby(**kwargs) }
-               end
-
-      return fallback if result.is_a?(Array) && result.empty?
-      result
-    end
-
-    def self.unsafe_load_file filename, **kwargs
-      File.open(filename, 'r:bom|utf-8') { |f|
-        self.unsafe_load f, filename: filename, **kwargs
-      }
-    end
-
-    def self.safe_load_file filename, **kwargs
-      File.open(filename, 'r:bom|utf-8') { |f|
-        self.safe_load f, filename: filename, **kwargs
-      }
-    end
-
-    def self.load_file filename, **kwargs
-      File.open(filename, 'r:bom|utf-8') { |f|
-        self.load f, filename: filename, **kwargs
-      }
     end
   end
 end
