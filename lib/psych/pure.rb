@@ -147,43 +147,42 @@ module Psych
       end
     end
 
-    # Wraps a Ruby object with its comments from the source input.
-    class CommentsObject < SimpleDelegator
-      attr_reader :psych_comments
+    # Wraps a Ruby object with its node from the source input.
+    class LoadedObject < SimpleDelegator
+      # The node associated with the object.
+      attr_reader :psych_node
 
-      def initialize(object, psych_comments)
-        @psych_comments = psych_comments
+      # Whether or not this object has been modified. If it has, then we cannot
+      # rely on the source formatting, and need to format it ourselves.
+      attr_reader :dirty
+
+      def initialize(object, psych_node, dirty = false)
         super(object)
+        @psych_node = psych_node
+        @dirty = dirty
       end
     end
 
-    # Wraps a Ruby hash with its comments from the source input.
-    class CommentsHash < SimpleDelegator
-      attr_reader :psych_comments, :psych_key_comments
+    # Wraps a Ruby hash with its node from the source input.
+    class LoadedHash < SimpleDelegator
+      # The node associated with the hash.
+      attr_reader :psych_node
 
-      def initialize(object, psych_comments, psych_key_comments = {})
-        @psych_comments = psych_comments
-        @psych_key_comments = psych_key_comments
-        commentless = {}
+      # The nodes associated with the keys of the hash.
+      attr_reader :psych_node_keys
 
-        object.each do |key, value|
-          if key.is_a?(CommentsObject)
-            @psych_key_comments[key.__getobj__] = key.psych_comments
-            commentless[key.__getobj__] = value
-          else
-            commentless[key] = value
-          end
-        end
-
-        super(commentless)
+      def initialize(object, psych_node, psych_node_keys = {})
+        super(object)
+        @psych_node = psych_node
+        @psych_node_keys = psych_node_keys
       end
 
       def []=(key, value)
         if (previous = self[key])
-          if previous.is_a?(CommentsObject)
-            value = CommentsObject.new(value, previous.psych_comments)
-          elsif previous.is_a?(CommentsHash)
-            value = CommentsHash.new(value, previous.psych_comments, previous.psych_key_comments)
+          if previous.is_a?(LoadedObject)
+            value = LoadedObject.new(value, previous.psych_node, true)
+          elsif previous.is_a?(LoadedHash)
+            value = LoadedHash.new(value, previous.psych_node, previous.psych_node_keys)
           end
         end
 
@@ -304,9 +303,18 @@ module Psych
       # Extend the document stream to be able to attach comments to the
       # document.
       module DocumentStream
+        def start_document(version, tag_directives, implicit)
+          node = Nodes::Document.new(version, tag_directives, implicit)
+          set_start_location(node)
+          push(node)
+        end
+
         def end_document(implicit_end = !streaming?)
           @last.implicit_end = implicit_end
-          @block.call(attach_comments(pop))
+          node = pop
+          set_end_location(node)
+          attach_comments(node)
+          @block.call(node)
         end
       end
 
@@ -341,16 +349,38 @@ module Psych
         def initialize(ss, class_loader, symbolize_names: false, freeze: false, comments: false)
           super(ss, class_loader, symbolize_names: symbolize_names, freeze: freeze)
           @comments = comments
+          @nodeless_objs = {}.compare_by_identity
+          @nodeless_keys = {}.compare_by_identity
         end
 
         def accept(node)
           result = super
 
           if @comments
-            if result.is_a?(Hash)
-              result = CommentsHash.new(result, node.comments? ? node.comments : nil)
-            elsif node.comments?
-              result = CommentsObject.new(result, node.comments)
+            case result
+            when LoadedObject, LoadedHash
+              # skip
+            when Hash
+              if !@nodeless_objs.key?(result)
+                nodeless_obj = {}
+                nodeless_key = {}
+
+                result.each do |key, value|
+                  if key.is_a?(LoadedObject) || key.is_a?(LoadedHash)
+                    nodeless_obj[key.__getobj__] = value
+                    nodeless_key[key.__getobj__] = key
+                  else
+                    nodeless_obj[key] = value
+                  end
+                end
+
+                @nodeless_objs[result] = nodeless_obj
+                @nodeless_keys[result] = nodeless_key
+              end
+
+              result = LoadedHash.new(@nodeless_objs.fetch(result), node, @nodeless_keys.fetch(result))
+            else
+              result = LoadedObject.new(result, node)
             end
           end
 
@@ -362,7 +392,7 @@ module Psych
       module ToRubySingleton
         def create(symbolize_names: false, freeze: false, strict_integer: false, comments: false)
           class_loader = ClassLoader.new
-          scanner      = ScalarScanner.new(class_loader, strict_integer: strict_integer)
+          scanner = ScalarScanner.new(class_loader, strict_integer: strict_integer)
           new(scanner, class_loader, symbolize_names: symbolize_names, freeze: freeze, comments: comments)
         end
       end
@@ -475,7 +505,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.trim)
         handler.scalar(
           @value,
           @anchor,
@@ -2441,7 +2471,6 @@ module Psych
         } then
           @in_scalar = false
           lines = events_cache_pop
-          lines.pop if lines.length > 0 && lines.last.empty?
           value = lines.map { |line| "#{line}\n" }.join
 
           case t
@@ -2450,7 +2479,7 @@ module Psych
           when :strip
             value.sub!(/\n+\z/, "")
           when :keep
-            value.sub!(/\n(\n+)\z/) { $1 } if !value.match?(/\S/)
+            # nothing
           else
             raise InternalException, t.inspect
           end
@@ -2469,6 +2498,8 @@ module Psych
       #   l-empty(n,block-in)*
       #   s-indent(n) nb-char+
       def parse_l_nb_literal_text(n)
+        events_cache_size = @events_cache[-1].size
+
         try do
           if star { parse_l_empty(n, :block_in) } && parse_s_indent(n)
             pos_start = @scanner.pos
@@ -2477,6 +2508,12 @@ module Psych
               events_push(from(pos_start))
               true
             end
+          else
+            # When parsing all of the l_empty calls, we may have added a bunch
+            # of empty lines to the events cache. We need to clear those out
+            # here.
+            @events_cache[-1].slice!(events_cache_size..-1)
+            false
           end
         end
       end
@@ -2739,7 +2776,7 @@ module Psych
 
         if try { plus { try { parse_s_indent(n + m) && parse_ns_l_block_map_entry(n + m) } } }
           events_cache_flush
-          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos))) # TODO
+          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
           true
         else
           events_cache_pop
@@ -2855,7 +2892,7 @@ module Psych
           star { try { parse_s_indent(n) && parse_ns_l_block_map_entry(n) } }
         } then
           events_cache_flush
-          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos))) # TODO
+          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
           true
         else
           events_cache_pop
@@ -3042,12 +3079,12 @@ module Psych
       def parse_l_yaml_stream
         events_push_flush_properties(StreamStart.new(Location.point(@source, @scanner.pos)))
 
-        @document_start_event = DocumentStart.new(Location.point(@source, @scanner.pos))
-        @tag_directives = @document_start_event.tag_directives
-        @document_end_event = nil
-
         if try {
           if parse_l_document_prefix
+            @document_start_event = DocumentStart.new(Location.point(@source, @scanner.pos))
+            @tag_directives = @document_start_event.tag_directives
+            @document_end_event = nil
+
             parse_l_any_document
             star do
               try do
@@ -3105,11 +3142,11 @@ module Psych
       # aliases, since we may find that we need to add an anchor after the
       # object has already been flushed.
       class Node
-        attr_reader :value, :comments
+        attr_reader :value, :psych_node
 
-        def initialize(value, comments)
+        def initialize(value, psych_node)
           @value = value
-          @comments = comments
+          @psych_node = psych_node
           @anchor = nil
         end
 
@@ -3127,7 +3164,7 @@ module Psych
 
       # Represents an array of nodes.
       class ArrayNode < Node
-        attr_accessor :anchor
+        attr_accessor :anchor, :tag
 
         def accept(visitor)
           visitor.visit_array(self)
@@ -3136,7 +3173,7 @@ module Psych
 
       # Represents a hash of nodes.
       class HashNode < Node
-        attr_accessor :anchor
+        attr_accessor :anchor, :tag
 
         def accept(visitor)
           visitor.visit_hash(self)
@@ -3150,6 +3187,14 @@ module Psych
       # Represents a generic object that is not matched by any of the other node
       # types.
       class ObjectNode < Node
+        # The explicit tag associated with the object.
+        attr_accessor :tag
+
+        # Whether or not this object was modified after being loaded. In this
+        # case we cannot rely on the source formatting, and need to instead
+        # format the value ourselves.
+        attr_accessor :dirty
+
         def accept(visitor)
           visitor.visit_object(self)
         end
@@ -3175,6 +3220,8 @@ module Psych
 
       # Represents a string object.
       class StringNode < Node
+        attr_accessor :tag
+
         def accept(visitor)
           visitor.visit_string(self)
         end
@@ -3195,14 +3242,10 @@ module Psych
         # Visit an ArrayNode.
         def visit_array(node)
           with_comments(node) do |value|
-            if (anchor = node.anchor)
-              @q.text("&#{anchor} ")
-            end
-
-            if value.empty?
-              @q.text("[]")
+            if value.empty? || ((psych_node = node.psych_node).is_a?(Nodes::Sequence) && psych_node.style == Nodes::Sequence::FLOW)
+              visit_array_contents_flow(node.anchor, node.tag, value)
             else
-              visit_array_contents(value)
+              visit_array_contents_block(node.anchor, node.tag, value)
             end
           end
         end
@@ -3210,16 +3253,10 @@ module Psych
         # Visit a HashNode.
         def visit_hash(node)
           with_comments(node) do |value|
-            if (anchor = node.anchor)
-              @q.text("&#{anchor}")
-            end
-
-            if value.empty?
-              @q.text(" ") if anchor
-              @q.text("{}")
+            if value.empty? || ((psych_node = node.psych_node).is_a?(Nodes::Mapping) && psych_node.style == Nodes::Mapping::FLOW)
+              visit_hash_contents_flow(node.anchor, node.tag, value)
             else
-              @q.breakable if anchor
-              visit_hash_contents(value)
+              visit_hash_contents_block(node.anchor, node.tag, value)
             end
           end
         end
@@ -3227,50 +3264,76 @@ module Psych
         # Visit an ObjectNode.
         def visit_object(node)
           with_comments(node) do |value|
-            @q.text(Psych.dump(value, indentation: @q.indent)[/\A--- (.+)\n\z/m, 1]) # TODO
+            if (tag = node.tag)
+              @q.text("#{tag} ")
+            end
+
+            if !node.dirty && (psych_node = node.psych_node)
+              @q.text(psych_node.value)
+            else
+              @q.text(dump_object(value))
+            end
           end
         end
 
         # Visit an OmapNode.
         def visit_omap(node)
           with_comments(node) do |value|
-            if (anchor = node.anchor)
-              @q.text("&#{anchor} ")
-            end
-
-            @q.text("!!omap")
-            @q.breakable
-
-            visit_array_contents(value)
+            visit_array_contents_block(node.anchor, "!!omap", value)
           end
         end
 
         # Visit a SetNode.
         def visit_set(node)
           with_comments(node) do |value|
-            if (anchor = node.anchor)
-              @q.text("&#{anchor} ")
-            end
-
-            @q.text("!set")
-            @q.breakable
-
-            visit_hash_contents(node.value)
+            visit_hash_contents_block(node.anchor, "!set", value)
           end
         end
 
         # Visit a StringNode.
-        alias visit_string visit_object
+        def visit_string(node)
+          with_comments(node) do |value|
+            if (tag = node.tag)
+              @q.text("#{tag} ")
+            end
+
+            @q.text(dump_object(value))
+          end
+        end
 
         private
+
+        # TODO: Certain objects require special formatting. Usually this
+        # involves scanning the object itself and determining what kind of YAML
+        # object it is, then dumping it back out. We rely on Psych itself to do
+        # this formatting for us.
+        #
+        # Note this is the one place where we indirectly rely on libyaml,
+        # because Psych delegates to libyaml to dump the object. This is less
+        # than ideal, because it means in some circumstances we have an indirect
+        # dependency. Ideally this would all be removed in favor of our own
+        # formatting.
+        def dump_object(value)
+          Psych.dump(value, indentation: @q.indent)[/\A--- (.+?)(?:\n\.\.\.)?\n\z/m, 1]
+        end
 
         # Shortcut to visit a node by passing this visitor to the accept method.
         def visit(node)
           node.accept(self)
         end
 
-        # Visit the elements within an array.
-        def visit_array_contents(contents)
+        # Visit the elements within an array in the block format.
+        def visit_array_contents_block(anchor, tag, contents)
+          if anchor
+            @q.text("&#{anchor}")
+            tag ? @q.text(" ") : @q.breakable
+          end
+
+          if tag
+            @q.text(tag)
+            @q.breakable
+          end
+
           @q.seplist(contents, -> { @q.breakable }) do |element|
             @q.text("-")
             next if element.is_a?(NilNode)
@@ -3278,79 +3341,147 @@ module Psych
             @q.text(" ")
             @q.nest(2) { visit(element) }
           end
+
+          @q.current_group.break
         end
 
-        # Visit the key/value pairs within a hash.
-        def visit_hash_contents(contents)
-          @q.seplist(contents, -> { @q.breakable }) do |key, value|
-            inlined = false
+        # Visit the elements within an array in the flow format.
+        def visit_array_contents_flow(anchor, tag, contents)
+          @q.group do
+            @q.text("&#{anchor} ") if anchor
+            @q.text("#{tag} ") if tag
+            @q.text("[")
 
-            case key
-            when NilNode
-              @q.text("! ''")
-            when ArrayNode, HashNode, OmapNode, SetNode
-              if key.anchor.nil?
-                @q.text("? ")
-                @q.nest(2) { visit(key) }
-                @q.breakable
-                inlined = true
-              else
-                visit(key)
+            unless contents.empty?
+              @q.nest(2) do
+                @q.breakable("")
+                @q.seplist(contents, -> { @q.comma_breakable }) { |element| visit(element) }
               end
-            when AliasNode, ObjectNode
-              visit(key)
-            when StringNode
-              if key.value.include?("\n")
-                @q.text("? ")
-                visit(key)
-                @q.breakable
-                inlined = true
-              else
-                visit(key)
-              end
+              @q.breakable("")
             end
 
-            @q.text(":")
+            @q.text("]")
+          end
+        end
 
-            case value
-            when NilNode
-              # skip
-            when OmapNode, SetNode
+        # Visit a key value pair within a hash.
+        def visit_hash_key_value(key, value)
+          inlined = false
+
+          case key
+          when NilNode
+            @q.text("! ''")
+          when ArrayNode, HashNode, OmapNode, SetNode
+            if key.anchor.nil?
+              @q.text("? ")
+              @q.nest(2) { visit(key) }
+              @q.breakable
+              inlined = true
+            else
+              visit(key)
+            end
+          when AliasNode, ObjectNode
+            visit(key)
+          when StringNode
+            if key.value.include?("\n")
+              @q.text("? ")
+              visit(key)
+              @q.breakable
+              inlined = true
+            else
+              visit(key)
+            end
+          else
+            raise InternalException
+          end
+
+          @q.text(":")
+
+          case value
+          when NilNode
+            # skip
+          when OmapNode, SetNode
+            @q.text(" ")
+            @q.nest(2) { visit(value) }
+          when ArrayNode
+            if ((psych_node = value.psych_node).is_a?(Nodes::Sequence) && psych_node.style == Nodes::Sequence::FLOW) || value.value.empty?
+              @q.text(" ")
+              visit(value)
+            elsif inlined || value.anchor || value.tag || value.value.empty?
               @q.text(" ")
               @q.nest(2) { visit(value) }
-            when ArrayNode
-              if value.value.empty?
-                @q.text(" []")
-              elsif inlined || value.anchor
-                @q.text(" ")
-                @q.nest(2) { visit(value) }
-              else
+            else
+              @q.breakable
+              visit(value)
+            end
+          when HashNode
+            if ((psych_node = value.psych_node).is_a?(Nodes::Mapping) && psych_node.style == Nodes::Mapping::FLOW) || value.value.empty?
+              @q.text(" ")
+              visit(value)
+            elsif inlined || value.anchor || value.tag
+              @q.text(" ")
+              @q.nest(2) { visit(value) }
+            else
+              @q.nest(2) do
                 @q.breakable
                 visit(value)
               end
-            when HashNode
-              if value.value.empty?
-                @q.text(" {}")
-              elsif inlined || value.anchor
-                @q.text(" ")
-                @q.nest(2) { visit(value) }
-              else
-                @q.nest(2) do
-                  @q.breakable
-                  visit(value)
+            end
+          when AliasNode, ObjectNode, StringNode
+            @q.text(" ")
+            @q.nest(2) { visit(value) }
+          else
+            raise InternalException
+          end
+        end
+
+        # Visit the key/value pairs within a hash in the block format.
+        def visit_hash_contents_block(anchor, tag, children)
+          if anchor
+            @q.text("&#{anchor}")
+            tag ? @q.text(" ") : @q.breakable
+          end
+
+          if tag
+            @q.text(tag)
+            @q.breakable
+          end
+
+          ((0...children.length) % 2).each do |index|
+            @q.breakable if index != 0
+            visit_hash_key_value(children[index], children[index + 1])
+          end
+
+          @q.current_group.break
+        end
+
+        # Visit the key/value pairs within a hash in the flow format.
+        def visit_hash_contents_flow(anchor, tag, children)
+          @q.group do
+            @q.text("&#{anchor} ") if anchor
+            @q.text("#{tag} ") if tag
+            @q.text("{")
+
+            unless children.empty?
+              @q.nest(2) do
+                @q.breakable
+
+                ((0...children.length) % 2).each do |index|
+                  @q.comma_breakable if index != 0
+                  visit_hash_key_value(children[index], children[index + 1])
                 end
               end
-            when AliasNode, ObjectNode, StringNode
-              @q.text(" ")
-              @q.nest(2) { visit(value) }
+              @q.breakable
             end
+
+            @q.text("}")
           end
         end
 
         # Print out the leading and trailing comments of a node, as well as
         # yielding the value of the node to the block.
         def with_comments(node)
-          if (comments = node.comments) && (leading = comments.leading).any?
+          if (comments = node.psych_node&.comments) && (leading = comments.leading).any?
             line = nil
 
             leading.each do |comment|
@@ -3435,13 +3566,41 @@ module Psych
       # This is the main entrypoint into this object. It is responsible for
       # pushing a new object onto the emitter, which is then represented as a
       # YAML document.
-      def <<(object)
+      def emit(object)
         if @started
-          @io << "...\n---"
+          @io << "...\n"
         else
-          @io << "---"
           @started = true
         end
+
+        # Very rare circumstance here that there are leading comments attached
+        # to the root object of a document that occur before the --- marker. In
+        # this case we want to output them first here, then dump the object.
+        if (object.is_a?(LoadedObject) || object.is_a?(LoadedHash)) && (psych_node = object.psych_node).comments? && (leading = psych_node.comments.leading).any?
+          leading = [*leading]
+          line = psych_node.start_line - 1
+
+          while leading.any? && leading.last.start_line == line
+            leading.pop
+            line -= 1
+          end
+
+          psych_node.comments.leading.slice!(0, leading.length)
+          line = nil
+
+          leading.each do |comment|
+            if line && (line < comment.start_line)
+              @io << "\n" * (comment.start_line - line - 1)
+            end
+
+            @io << comment.value
+            @io << "\n"
+
+            line = comment.start_line
+          end
+        end
+
+        @io << "---"
 
         if (node = dump(object)).is_a?(NilNode)
           @io << "\n"
@@ -3465,40 +3624,74 @@ module Psych
 
       private
 
-      # Walk through the given object and convert it into a tree of nodes.
-      def dump(base_object, comments = nil)
-        object = base_object
-
-        if base_object.is_a?(CommentsObject) || base_object.is_a?(CommentsHash)
-          object = base_object.__getobj__
-          comments = base_object.psych_comments
-        end
-
-        if object.nil?
-          NilNode.new(object, comments)
-        elsif @object_nodes.key?(object)
-          AliasNode.new(@object_nodes[object].anchor = (@object_anchors[object] ||= (@object_anchor += 1)), comments)
+      # Dump the tag value for a given node.
+      def dump_tag(value)
+        case value
+        when nil, "tag:yaml.org,2002:binary"
+          nil
+        when /\Atag:yaml.org,2002:(.+)\z/
+          "!!#{$1}"
         else
-          case object
-          when Psych::Omap
-            @object_nodes[object] = OmapNode.new(object.map { |(key, value)| HashNode.new({ dump(key) => dump(value) }, nil) }, comments)
-          when Psych::Set
-            @object_nodes[object] = SetNode.new(object.to_h { |key, value| [dump(key), dump(value)] }, comments)
-          when Array
-            @object_nodes[object] = ArrayNode.new(object.map { |element| dump(element) }, comments)
-          when Hash
-            dumped =
-              if base_object.is_a?(CommentsHash)
-                object.to_h { |key, value| [dump(key, base_object.psych_key_comments[key]), dump(value)] }
-              else
-                object.to_h { |key, value| [dump(key), dump(value)] }
-              end
+          value
+        end
+      end
 
-            @object_nodes[object] = HashNode.new(dumped, comments)
-          when String
-            StringNode.new(object, comments)
+      # Walk through the given object and convert it into a tree of nodes.
+      def dump(base_object)
+        if base_object.nil?
+          NilNode.new(nil, nil)
+        else
+          object = base_object
+          psych_node = nil
+          dirty = false
+
+          if base_object.is_a?(LoadedObject)
+            object = base_object.__getobj__
+            psych_node = base_object.psych_node
+            dirty = base_object.dirty
+          elsif base_object.is_a?(LoadedHash)
+            object = base_object.__getobj__
+            psych_node = base_object.psych_node
+          end
+
+          if @object_nodes.key?(object)
+            AliasNode.new(@object_nodes[object].anchor = (@object_anchors[object] ||= (@object_anchor += 1)), nil)
           else
-            ObjectNode.new(object, comments)
+            case object
+            when Psych::Omap
+              @object_nodes[object] = OmapNode.new(object.map { |(key, value)| HashNode.new([dump(key), dump(value)], nil) }, psych_node)
+            when Psych::Set
+              @object_nodes[object] = SetNode.new(object.flat_map { |key, value| [dump(key), dump(value)] }, psych_node)
+            when Array
+              dumped = ArrayNode.new(object.map { |element| dump(element) }, psych_node)
+              dumped.tag = dump_tag(psych_node&.tag)
+
+              @object_nodes[object] = dumped
+            when Hash
+              contents =
+                if base_object.is_a?(LoadedHash)
+                  psych_node_keys = base_object.psych_node_keys    
+                  object.flat_map { |key, value| [dump(psych_node_keys.fetch(key, key)), dump(value)] }
+                else
+                  object.flat_map { |key, value| [dump(key), dump(value)] }
+                end
+
+              dumped = HashNode.new(contents, psych_node)
+              dumped.tag = dump_tag(psych_node&.tag)
+
+              @object_nodes[object] = dumped
+            when String
+              dumped = StringNode.new(object, psych_node)
+              dumped.tag = dump_tag(psych_node&.tag)
+
+              dumped
+            else
+              dumped = ObjectNode.new(object, psych_node)
+              dumped.tag = dump_tag(psych_node&.tag)
+              dumped.dirty = dirty
+
+              dumped
+            end
           end
         end
       end
@@ -3538,10 +3731,10 @@ module Psych
       private
 
       # Dump the given object, ensuring that it is a permitted object.
-      def dump(base_object, comments = nil)
+      def dump(base_object)
         object = base_object
 
-        if base_object.is_a?(CommentsObject) || base_object.is_a?(CommentsHash)
+        if base_object.is_a?(LoadedObject) || base_object.is_a?(LoadedHash)
           object = base_object.__getobj__
         end
 
@@ -3677,7 +3870,7 @@ module Psych
 
       real_io = io || StringIO.new
       emitter = Emitter.new(real_io, options)
-      emitter << o
+      emitter.emit(o)
       io || real_io.string
     end
 
@@ -3691,7 +3884,7 @@ module Psych
 
       real_io = io || StringIO.new
       emitter = SafeEmitter.new(real_io, options)
-      emitter << o
+      emitter.emit(o)
       io || real_io.string
     end
 
@@ -3699,7 +3892,7 @@ module Psych
     def self.dump_stream(*objects)
       real_io = io || StringIO.new
       emitter = Emitter.new(real_io, {})
-      objects.each { |object| emitter << object }
+      objects.each { |object| emitter.emit(object) }
       io || real_io.string
     end
   end
