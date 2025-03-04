@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 
 ## [Unreleased]
 
+## [0.1.2] - 2025-03-04
+
+- Fix up comment dumping to not drift around objects.
+- Rely on source formatting when possible for scalar values.
+- Fix up multi-line literals with the "keep" flag (|+).
+- Fix up aliasing hashes that have comments loaded.
+
 ## [0.1.1] - 2025-02-13
 
 - Fix up comment handling to preserve within hashes.
@@ -18,6 +25,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 
 - 🎉 Initial release. 🎉
 
-[unreleased]: https://github.com/kddnewton/psych-pure/compare/v0.1.1...HEAD
+[unreleased]: https://github.com/kddnewton/psych-pure/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/kddnewton/psych-pure/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kddnewton/psych-pure/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kddnewton/psych-pure/compare/24de62...v0.1.0
