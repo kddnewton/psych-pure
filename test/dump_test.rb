@@ -6,6 +6,18 @@ module Psych
   module Pure
     module DumpTest
       class DumpObjectsTest < Minitest::Test
+        def test_alias
+          expected = <<~YAML
+          ---
+          a: &1
+            b: 1
+          c: *1
+          YAML
+
+          inner = { "b" => 1 }
+          assert_equal(expected, dump("a" => inner, "c" => inner))
+        end
+
         def test_mapping_non_empty
           expected = <<~YAML
           ---
@@ -52,6 +64,17 @@ module Psych
       end
 
       class DumpLoadedTest < Minitest::Test
+        def test_alias
+          expected = <<~YAML
+          ---
+          a: &anchor
+            b: 1
+          c: *anchor
+          YAML
+
+          assert_equal(expected, dump(expected))
+        end
+
         def test_mapping_block
           expected = <<~YAML
           ---
@@ -198,7 +221,7 @@ module Psych
         private
 
         def dump(source)
-          Pure.dump(Pure.load(source, permitted_classes: [Date, Time], comments: true))
+          Pure.dump(Pure.load(source, aliases: true, permitted_classes: [Date, Time], comments: true))
         end
       end
     end
