@@ -3655,7 +3655,14 @@ module Psych
           end
 
           if @object_nodes.key?(object)
-            AliasNode.new(@object_nodes[object].anchor = (@object_anchors[object] ||= (@object_anchor += 1)), nil)
+            @object_anchors[object] ||=
+              if psych_node.is_a?(Nodes::Alias)
+                psych_node.anchor
+              else
+                @object_anchor += 1
+              end
+
+            AliasNode.new(@object_nodes[object].anchor = @object_anchors[object], psych_node)
           else
             case object
             when Psych::Omap
