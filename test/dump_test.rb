@@ -186,19 +186,12 @@ module Psych
         def test_string_literal_keep_zero
           expected = <<~YAML
           ---
-          literal_keep: \|
-            Keep trailing newlines
-            in this block
-          YAML
-
-          source = <<~YAML
-          ---
           literal_keep: \|+
             Keep trailing newlines
             in this block
           YAML
 
-          assert_equal(expected, dump(source))
+          assert_equal(expected, dump(expected))
         end
 
         def test_string_literal_keep_one
@@ -207,7 +200,6 @@ module Psych
           literal_keep: \|+
             Keep trailing newlines
             in this block
-
           YAML
 
           assert_equal(expected, dump(expected))

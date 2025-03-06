@@ -7,6 +7,14 @@ require "strscan"
 require "stringio"
 
 module Psych
+  module Nodes
+    class Scalar
+      # The source of the scalar, as it was found in the input. This may be set
+      # in order to be reused when dumping the object.
+      attr_accessor :source
+    end
+  end
+
   # A YAML parser written in Ruby.
   module Pure
     # An internal exception is an exception that should not have occurred. It is
@@ -27,7 +35,13 @@ module Psych
         offset = 0
         string.each_line do |line|
           @line_offsets << offset
-          @trimmable_lines << line.match?(/\A(?: *#.*)?\n\z/)
+          @trimmable_lines <<
+            case line
+            when /\A *#.*\n\z/ then :comment
+            when /\A *\n\z/ then :blank
+            else false
+            end
+
           offset += line.bytesize
         end
 
@@ -37,6 +51,14 @@ module Psych
 
       def trim(offset)
         while (l = line(offset)) != 0 && (offset == @line_offsets[l]) && @trimmable_lines[l - 1]
+          offset = @line_offsets[l - 1]
+        end
+
+        offset
+      end
+
+      def trim_comments(offset)
+        while (l = line(offset)) != 0 && (offset == @line_offsets[l]) && @trimmable_lines[l - 1] == :comment
           offset = @line_offsets[l - 1]
         end
 
@@ -64,6 +86,10 @@ module Psych
         @pos_end = pos_end
       end
 
+      def range
+        @pos_start...@pos_end
+      end
+
       def start_line
         @source.line(@pos_start)
       end
@@ -87,6 +113,11 @@ module Psych
       # Trim trailing whitespace and comments from this location.
       def trim
         Location.new(@source, @pos_start, @source.trim(@pos_end))
+      end
+
+      # Trim trailing comments from this location.
+      def trim_comments
+        Location.new(@source, @pos_start, @source.trim_comments(@pos_end))
       end
 
       def to_a
@@ -493,11 +524,12 @@ module Psych
     # A scalar event represents a single value in the YAML document. It can be
     # many different types.
     class Scalar
-      attr_reader :location, :value, :style
+      attr_reader :location, :source, :value, :style
       attr_accessor :anchor, :tag
 
-      def initialize(location, value, style)
+      def initialize(location, source, value, style)
         @location = location
+        @source = source
         @value = value
         @anchor = nil
         @tag = nil
@@ -506,14 +538,19 @@ module Psych
 
       def accept(handler)
         handler.event_location(*@location.trim)
-        handler.scalar(
-          @value,
-          @anchor,
-          @tag,
-          (!@tag || @tag == "!") && (@style == Nodes::Scalar::PLAIN),
-          (!@tag || @tag == "!") && (@style != Nodes::Scalar::PLAIN),
-          @style
-        )
+
+        event =
+          handler.scalar(
+            @value,
+            @anchor,
+            @tag,
+            (!@tag || @tag == "!") && (@style == Nodes::Scalar::PLAIN),
+            (!@tag || @tag == "!") && (@style != Nodes::Scalar::PLAIN),
+            @style
+          )
+
+        event.source = source if event.is_a?(Nodes::Scalar)
+        event
       end
     end
 
@@ -1453,7 +1490,7 @@ module Psych
       # e-scalar ::=
       #   <empty>
       def parse_e_scalar
-        events_push_flush_properties(Scalar.new(Location.point(@source, @scanner.pos), "", Nodes::Scalar::PLAIN))
+        events_push_flush_properties(Scalar.new(Location.point(@source, @scanner.pos), "", "", Nodes::Scalar::PLAIN))
         true
       end
 
@@ -1557,7 +1594,7 @@ module Psych
             end
           end
 
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), value, Nodes::Scalar::DOUBLE_QUOTED))
+          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start), value, Nodes::Scalar::DOUBLE_QUOTED))
           true
         end
       end
@@ -1701,7 +1738,7 @@ module Psych
           value.gsub!(/(?:[\ \t]*\r?\n[\ \t]*)/, "\n")
           value.gsub!(/\n(\n*)/) { $1.empty? ? " " : $1 }
           value.gsub!("''", "'")
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), value, Nodes::Scalar::SINGLE_QUOTED))
+          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start), value, Nodes::Scalar::SINGLE_QUOTED))
           true
         end
       end
@@ -2241,10 +2278,13 @@ module Psych
           end
 
         if result
-          value = from(pos_start)
+          source = from(pos_start)
+
+          value = source.dup
           value.gsub!(/(?:[\ \t]*\r?\n[\ \t]*)/, "\n")
           value.gsub!(/\n(\n*)/) { $1.empty? ? " " : $1 }
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), value, Nodes::Scalar::PLAIN))
+
+          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), source, value, Nodes::Scalar::PLAIN))
         end
 
         result
@@ -2470,8 +2510,7 @@ module Psych
           parse_l_literal_content(n + m, t)
         } then
           @in_scalar = false
-          lines = events_cache_pop
-          value = lines.map { |line| "#{line}\n" }.join
+          value = events_cache_pop.map { |line| "#{line}\n" }.join
 
           case t
           when :clip
@@ -2484,7 +2523,8 @@ module Psych
             raise InternalException, t.inspect
           end
 
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), value, Nodes::Scalar::LITERAL))
+          location = Location.new(@source, pos_start, @scanner.pos).trim_comments
+          events_push_flush_properties(Scalar.new(location, @scanner.string.byteslice(location.range).chomp, value, Nodes::Scalar::LITERAL))
           true
         else
           @in_scalar = false
@@ -2582,7 +2622,8 @@ module Psych
             raise InternalException, t.inspect
           end
 
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), value, Nodes::Scalar::FOLDED))
+          location = Location.new(@source, pos_start, @scanner.pos).trim_comments
+          events_push_flush_properties(Scalar.new(location, @scanner.string.byteslice(location.range).chomp, value, Nodes::Scalar::FOLDED))
           true
         else
           @in_scalar = false
@@ -3220,7 +3261,13 @@ module Psych
 
       # Represents a string object.
       class StringNode < Node
+        # The explicit tag associated with the object.
         attr_accessor :tag
+
+        # Whether or not this object was modified after being loaded. In this
+        # case we cannot rely on the source formatting, and need to instead
+        # format the value ourselves.
+        attr_accessor :dirty
 
         def accept(visitor)
           visitor.visit_string(self)
@@ -3264,13 +3311,17 @@ module Psych
         # Visit an ObjectNode.
         def visit_object(node)
           with_comments(node) do |value|
-            if (tag = node.tag)
-              @q.text("#{tag} ")
-            end
-
             if !node.dirty && (psych_node = node.psych_node)
-              @q.text(psych_node.value)
+              if (tag = node.tag)
+                @q.text("#{tag} ")
+              end
+
+              @q.text(psych_node.source || psych_node.value)
             else
+              if (tag = node.tag) && tag != "tag:yaml.org,2002:binary"
+                @q.text("#{tag} ")
+              end
+
               @q.text(dump_object(value))
             end
           end
@@ -3293,11 +3344,19 @@ module Psych
         # Visit a StringNode.
         def visit_string(node)
           with_comments(node) do |value|
-            if (tag = node.tag)
-              @q.text("#{tag} ")
-            end
+            if !node.dirty && (psych_node = node.psych_node)
+              if (tag = node.tag)
+                @q.text("#{tag} ")
+              end
 
-            @q.text(dump_object(value))
+              @q.text(psych_node.source || psych_node.value)
+            else
+              if (tag = node.tag) && tag != "tag:yaml.org,2002:binary"
+                @q.text("#{tag} ")
+              end
+
+              @q.text(dump_object(value))
+            end
           end
         end
 
@@ -3576,6 +3635,7 @@ module Psych
         # Very rare circumstance here that there are leading comments attached
         # to the root object of a document that occur before the --- marker. In
         # this case we want to output them first here, then dump the object.
+        reload_comments = nil
         if (object.is_a?(LoadedObject) || object.is_a?(LoadedHash)) && (psych_node = object.psych_node).comments? && (leading = psych_node.comments.leading).any?
           leading = [*leading]
           line = psych_node.start_line - 1
@@ -3598,6 +3658,8 @@ module Psych
 
             line = comment.start_line
           end
+
+          reload_comments = leading.concat(psych_node.comments.leading)
         end
 
         @io << "---"
@@ -3620,6 +3682,12 @@ module Psych
 
           @io << q.output
         end
+
+        # If we initially split up the leading comments, then we need to reload
+        # them back to their original state here.
+        unless reload_comments.nil?
+          object.psych_node.comments.leading.replace(reload_comments)
+        end
       end
 
       private
@@ -3627,8 +3695,6 @@ module Psych
       # Dump the tag value for a given node.
       def dump_tag(value)
         case value
-        when nil, "tag:yaml.org,2002:binary"
-          nil
         when /\Atag:yaml.org,2002:(.+)\z/
           "!!#{$1}"
         else
@@ -3690,13 +3756,12 @@ module Psych
             when String
               dumped = StringNode.new(object, psych_node)
               dumped.tag = dump_tag(psych_node&.tag)
-
+              dumped.dirty = dirty
               dumped
             else
               dumped = ObjectNode.new(object, psych_node)
               dumped.tag = dump_tag(psych_node&.tag)
               dumped.dirty = dirty
-
               dumped
             end
           end
