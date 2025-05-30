@@ -14,7 +14,7 @@ GEM
     psych (5.2.6)
       date
       stringio
-    rake (13.2.1)
+    rake (13.3.0)
     simplecov (0.22.0)
       docile (~> 1.1)
       simplecov-html (~> 0.11)
