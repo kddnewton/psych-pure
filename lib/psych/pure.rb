@@ -25,7 +25,7 @@ module Psych
       end
     end
 
-    # A source is wraps the input string and provides methods to access line and
+    # A source wraps the input string and provides methods to access line and
     # column information from a byte offset.
     class Source
       def initialize(string)
@@ -192,32 +192,74 @@ module Psych
         @psych_node = psych_node
         @dirty = dirty
       end
+
+      def replace(psych_node)
+        @psych_node = psych_node
+        @dirty = true
+      end
     end
 
     # Wraps a Ruby hash with its node from the source input.
     class LoadedHash < SimpleDelegator
+      class PsychKey
+        attr_reader :key_node, :value_node
+
+        def initialize(key_node, value_node)
+          @key_node = key_node
+          @value_node = value_node
+        end
+
+        def replace(value_node)
+          @value_node = value_node
+        end
+      end
+
       # The node associated with the hash.
       attr_reader :psych_node
 
-      # The nodes associated with the keys of the hash.
-      attr_reader :psych_node_keys
-
-      def initialize(object, psych_node, psych_node_keys = {})
+      def initialize(object, psych_node)
         super(object)
         @psych_node = psych_node
-        @psych_node_keys = psych_node_keys
+        @psych_keys = []
+      end
+
+      def psych_keys
+        @psych_keys.map do |psych_key|
+          [psych_key.key_node, psych_key.value_node]
+        end
       end
 
       def []=(key, value)
-        if (previous = self[key])
-          if previous.is_a?(LoadedObject)
-            value = LoadedObject.new(value, previous.psych_node, true)
-          elsif previous.is_a?(LoadedHash)
-            value = LoadedHash.new(value, previous.psych_node, previous.psych_node_keys)
+        if begin
+          @psych_keys.none? do |psych_key|
+            key_node = psych_key.key_node
+            key_node_inner =
+              if key_node.is_a?(LoadedHash) || key_node.is_a?(LoadedObject)
+                key_node.__getobj__
+              else
+                key_node
+              end
+
+            if key_node_inner.eql?(key)
+              psych_key.replace(value)
+              true
+            end
           end
+        end then
+          @psych_keys << PsychKey.new(key, value)
         end
 
         super(key, value)
+      end
+
+      def set!(key_node, value_node)
+        @psych_keys << PsychKey.new(key_node, value_node)
+        __getobj__[key_node.__getobj__] = value_node
+      end
+
+      def join!(key_node, value_node)
+        @psych_keys << PsychKey.new(key_node, value_node)
+        merge!(value_node)
       end
     end
 
@@ -380,8 +422,6 @@ module Psych
         def initialize(ss, class_loader, symbolize_names: false, freeze: false, comments: false)
           super(ss, class_loader, symbolize_names: symbolize_names, freeze: freeze)
           @comments = comments
-          @nodeless_objs = {}.compare_by_identity
-          @nodeless_keys = {}.compare_by_identity
         end
 
         def accept(node)
@@ -391,31 +431,66 @@ module Psych
             case result
             when LoadedObject, LoadedHash
               # skip
-            when Hash
-              if !@nodeless_objs.key?(result)
-                nodeless_obj = {}
-                nodeless_key = {}
-
-                result.each do |key, value|
-                  if key.is_a?(LoadedObject) || key.is_a?(LoadedHash)
-                    nodeless_obj[key.__getobj__] = value
-                    nodeless_key[key.__getobj__] = key
-                  else
-                    nodeless_obj[key] = value
-                  end
-                end
-
-                @nodeless_objs[result] = nodeless_obj
-                @nodeless_keys[result] = nodeless_key
-              end
-
-              result = LoadedHash.new(@nodeless_objs.fetch(result), node, @nodeless_keys.fetch(result))
             else
               result = LoadedObject.new(result, node)
             end
           end
 
           result
+        end
+
+        private
+
+        def revive_hash(hash, node, tagged = false)
+          return super unless @comments
+
+          revived = LoadedHash.new(hash, node)
+          node.children.each_slice(2) do |key_node, value_node|
+            key = accept(key_node)
+            value = accept(value_node)
+
+            if key == "<<" && key_node.tag != "tag:yaml.org,2002:str"
+              case value_node
+              when Nodes::Alias, Nodes::Mapping
+                begin
+                  # h1:
+                  #   <<: *h2
+                  #   <<: { k: v }
+                  revived.join!(key, value)
+                rescue TypeError
+                  # a: &a [1, 2, 3]
+                  # h: { <<: *a }
+                  revived.set!(key, value)
+                end
+              when Nodes::Sequence
+                # h1:
+                #   <<: [*h2, *h3]
+                begin
+                  temporary = {}
+                  value.reverse_each { |value| temporary.merge!(value) }
+                rescue TypeError
+                  revived.set!(key, value)
+                else
+                  value_node.children.zip(value).reverse_each do |(child_value_node, child_value)|
+                    revived.join!(key, child_value)
+                  end
+                end
+              else
+                # k: v
+                revived.set!(key, value)
+              end
+            else
+              if !tagged && @symbolize_names && key.is_a?(String)
+                key = key.to_sym
+              elsif !@freeze
+                key = deduplicate(key)
+              end
+
+              revived.set!(key, value)
+            end
+          end
+
+          revived
         end
       end
 
@@ -3506,9 +3581,26 @@ module Psych
             @q.breakable
           end
 
+          current_line = nil
           ((0...children.length) % 2).each do |index|
-            @q.breakable if index != 0
-            visit_hash_key_value(children[index], children[index + 1])
+            key = children[index]
+            value = children[index + 1]
+
+            if index > 0
+              @q.breakable
+
+              if current_line && (psych_node = key.psych_node)
+                start_line = psych_node.start_line
+                if (leading = key.psych_node.comments.leading).any?
+                  start_line = leading.first.start_line
+                end
+
+                @q.breakable if start_line - current_line >= 2
+              end
+            end
+
+            current_line = (psych_node = value.psych_node) ? psych_node.end_line : nil
+            visit_hash_key_value(key, value)
           end
 
           @q.current_group.break
@@ -3743,8 +3835,7 @@ module Psych
             when Hash
               contents =
                 if base_object.is_a?(LoadedHash)
-                  psych_node_keys = base_object.psych_node_keys    
-                  object.flat_map { |key, value| [dump(psych_node_keys.fetch(key, key)), dump(value)] }
+                  base_object.psych_keys.flat_map { |(key, value)| [dump(key), dump(value)] }
                 else
                   object.flat_map { |key, value| [dump(key), dump(value)] }
                 end

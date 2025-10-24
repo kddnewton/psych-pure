@@ -94,6 +94,16 @@ module Psych
           assert_equal(expected, dump("a: {b: 1}"))
         end
 
+        def test_mapping_duplicate_keys
+          expected = <<~YAML
+          ---
+          a: 1
+          a: 2
+          YAML
+
+          assert_equal(expected, dump("a: 1\na: 2"))
+        end
+
         def test_scalar_true
           assert_equal(
             "---\n[true, True, TRUE, yes, Yes, YES, on, On, ON]\n",
