@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 
 ## [Unreleased]
 
+## [0.1.4] - 2025-11-10
+
+- Fix up comment handling preceding sequence elements.
+- Properly update hashes in mutation methods that are loaded through `Psych::Pure.load`.
+- Properly raise syntax errors when the parser does not finish.
+
 ## [0.1.3] - 2025-10-24
 
 - Fix up roundtripping when using `<<` inside mappings.
