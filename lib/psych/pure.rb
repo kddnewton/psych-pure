@@ -223,7 +223,11 @@ module Psych
           @value_node = value_node
         end
 
-        def replace(value_node)
+        def replace_key(key_node)
+          @key_node = key_node
+        end
+
+        def replace_value(value_node)
           @value_node = value_node
         end
       end
@@ -231,16 +235,13 @@ module Psych
       # The node associated with the hash.
       attr_reader :psych_node
 
+      # The list of key/value pairs within the hash.
+      attr_reader :psych_keys
+
       def initialize(object, psych_node)
         super(object)
         @psych_node = psych_node
         @psych_keys = []
-      end
-
-      def psych_keys
-        @psych_keys.map do |psych_key|
-          [psych_key.key_node, psych_key.value_node]
-        end
       end
 
       def set!(key_node, value_node)
@@ -253,93 +254,225 @@ module Psych
         merge!(value_node)
       end
 
-      # Override Hash mutation methods to keep @psych_keys in sync
+      def psych_assocs
+        @psych_keys.map { |psych_key| [psych_key.key_node, psych_key.value_node] }
+      end
+
+      # Override Hash mutation methods to keep @psych_keys in sync.
+
+      def initialize_clone(obj, freeze: nil)
+        super
+        @psych_keys = obj.psych_keys.map(&:dup)
+      end
+
+      def initialize_dup(obj)
+        super
+        @psych_keys = obj.psych_keys.map(&:dup)
+      end
 
       def []=(key, value)
-        super(key, value).tap do
-          if (psych_key = @psych_keys.reverse_each.find { |psych_key| psych_key_node(psych_key).eql?(key) })
-            psych_key.replace(value)
-          else
-            @psych_keys << PsychKey.new(key, value)
+        super(key, value)
+
+        if (psych_key = @psych_keys.reverse_each.find { |psych_key| psych_compare?(psych_key.key_node, key) })
+          psych_key.replace_value(value)
+        else
+          @psych_keys << PsychKey.new(key, value)
+        end
+
+        value
+      end
+
+      alias store []=
+
+      def clear
+        super
+        @psych_keys.clear
+
+        self
+      end
+
+      def compact!
+        mutated = false
+        @psych_keys.each do |psych_key|
+          if psych_unwrap(psych_key.value_node).nil?
+            mutated = true
+            delete(psych_unwrap(psych_key.key_node))
           end
         end
+
+        self if mutated
+      end
+
+      def compact
+        dup.compact!
       end
 
       def delete(key)
-        super.tap { psych_key_remove(key) }
+        result = super
+        psych_delete(key)
+
+        result
       end
 
       def delete_if(&block)
         super do |key, value|
-          yield(key, value).tap { |result| psych_key_remove(key) if result }
+          yield(key, psych_unwrap(value)).tap do |result|
+            psych_delete(key) if result
+          end
         end
+
+        self
+      end
+
+      def except(*keys)
+        dup.delete_if { |key, _| keys.include?(key) }
+      end
+
+      def filter!(&block)
+        mutated = false
+        super do |key, value|
+          yield(key, psych_unwrap(value)).tap do |result|
+            unless result
+              psych_delete(key)
+              mutated = true
+            end
+          end
+        end
+
+        self if mutated
+      end
+
+      def filter(&block)
+        dup.filter!(&block)
+      end
+
+      def invert
+        result = LoadedHash.new({}, @psych_node)
+        each { |key, value| result[psych_unwrap(value)] = key }
+        result
       end
 
       def keep_if(&block)
         super do |key, value|
-          yield(key, value).tap { |result| psych_key_remove(key) unless result }
+          yield(key, psych_unwrap(value)).tap do |result|
+            psych_delete(key) unless result
+          end
         end
+
+        self
+      end
+
+      alias select! keep_if
+
+      def merge!(*others)
+        super
+        others.each do |other|
+          other.each do |key, value|
+            psych_delete(key)
+            @psych_keys << PsychKey.new(key, value)
+          end
+        end
+
+        self
+      end
+
+      alias update merge!
+
+      def merge(*others)
+        dup.merge!(*others)
       end
 
       def reject!(&block)
+        mutated = false
         super do |key, value|
-          yield(key, value).tap { |result| psych_key_remove(key) if result }
+          yield(key, psych_unwrap(value)).tap do |result|
+            if result
+              psych_delete(key)
+              mutated = true
+            end
+          end
         end
+
+        self if mutated
       end
 
-      def select!(&block)
-        super do |key, value|
-          yield(key, value).tap { |result| psych_key_remove(key) unless result }
-        end
+      def reject(&block)
+        dup.reject!(&block)
+      end
+
+      def replace(other)
+        super
+
+        @psych_keys.clear
+        other.each { |key, value| @psych_keys << PsychKey.new(key, value) }
+
+        self
       end
 
       def shift
-        super.tap { |key, _| psych_key_remove(key) if key }
+        unless empty?
+          key, value = super
+          psych_delete(key)
+
+          [key, value]
+        end
       end
 
-      def clear
-        super.tap { @psych_keys.clear }
+      def slice(*keys)
+        dup.select! { |key, _| keys.include?(key) }
       end
 
-      def merge!(other)
-        super.tap do
-          other.each do |key, value|
-            psych_key_remove(key)
-            @psych_keys << PsychKey.new(key, value)
+      def transform_keys!(&block)
+        super do |key|
+          yield(key).tap do |result|
+            @psych_keys
+              .reverse_each
+              .find { |psych_key| psych_compare?(psych_key.key_node, key) }
+              &.replace_key(result)
+          end
+        end
+
+        self
+      end
+
+      def transform_keys(&block)
+        dup.transform_keys!(&block)
+      end
+
+      def transform_values!(&block)
+        super do |value|
+          yield(psych_unwrap(value)).tap do |result|
+            @psych_keys
+              .reverse_each
+              .find { |psych_key| psych_compare?(psych_key.value_node, value) }
+              &.replace_value(result)
           end
         end
       end
 
-      alias_method :update, :merge!
-
-      def replace(other)
-        super.tap do
-          @psych_keys.clear
-          other.each { |key, value| @psych_keys << PsychKey.new(key, value) }
-        end
-      end
-
-      def compact!
-        super.tap do
-          @psych_keys.reject! { |psych_key| psych_key.value_node.nil? }
-        end
+      def transform_values(&block)
+        dup.transform_values!(&block)
       end
 
       private
 
-      def psych_key_node(psych_key)
-        key = psych_key.key_node
-
-        if key.is_a?(LoadedHash) || key.is_a?(LoadedObject)
-          key.__getobj__
+      def psych_compare?(psych_node, value)
+        if compare_by_identity?
+          psych_unwrap(psych_node).equal?(value)
         else
-          key
+          psych_unwrap(psych_node).eql?(value)
         end
       end
 
-      def psych_key_remove(key)
-        @psych_keys.reject! do |psych_key|
-          psych_key_node(psych_key).eql?(key)
+      def psych_delete(key)
+        @psych_keys.reject! { |psych_key| psych_compare?(psych_key.key_node, key) }
+      end
+
+      def psych_unwrap(node)
+        if node.is_a?(LoadedHash) || node.is_a?(LoadedObject)
+          node.__getobj__
+        else
+          node
         end
       end
     end
@@ -3941,7 +4074,7 @@ module Psych
             when Hash
               contents =
                 if base_object.is_a?(LoadedHash)
-                  base_object.psych_keys.flat_map { |(key, value)| [dump(key), dump(value)] }
+                  base_object.psych_assocs.flat_map { |(key, value)| [dump(key), dump(value)] }
                 else
                   object.flat_map { |key, value| [dump(key), dump(value)] }
                 end
