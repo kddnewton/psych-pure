@@ -229,29 +229,6 @@ module Psych
         end
       end
 
-      def []=(key, value)
-        if begin
-          @psych_keys.none? do |psych_key|
-            key_node = psych_key.key_node
-            key_node_inner =
-              if key_node.is_a?(LoadedHash) || key_node.is_a?(LoadedObject)
-                key_node.__getobj__
-              else
-                key_node
-              end
-
-            if key_node_inner.eql?(key)
-              psych_key.replace(value)
-              true
-            end
-          end
-        end then
-          @psych_keys << PsychKey.new(key, value)
-        end
-
-        super(key, value)
-      end
-
       def set!(key_node, value_node)
         @psych_keys << PsychKey.new(key_node, value_node)
         __getobj__[key_node.__getobj__] = value_node
@@ -260,6 +237,96 @@ module Psych
       def join!(key_node, value_node)
         @psych_keys << PsychKey.new(key_node, value_node)
         merge!(value_node)
+      end
+
+      # Override Hash mutation methods to keep @psych_keys in sync
+
+      def []=(key, value)
+        super(key, value).tap do
+          if (psych_key = @psych_keys.reverse_each.find { |psych_key| psych_key_node(psych_key).eql?(key) })
+            psych_key.replace(value)
+          else
+            @psych_keys << PsychKey.new(key, value)
+          end
+        end
+      end
+
+      def delete(key)
+        super.tap { psych_key_remove(key) }
+      end
+
+      def delete_if(&block)
+        super do |key, value|
+          yield(key, value).tap { |result| psych_key_remove(key) if result }
+        end
+      end
+
+      def keep_if(&block)
+        super do |key, value|
+          yield(key, value).tap { |result| psych_key_remove(key) unless result }
+        end
+      end
+
+      def reject!(&block)
+        super do |key, value|
+          yield(key, value).tap { |result| psych_key_remove(key) if result }
+        end
+      end
+
+      def select!(&block)
+        super do |key, value|
+          yield(key, value).tap { |result| psych_key_remove(key) unless result }
+        end
+      end
+
+      def shift
+        super.tap { |key, _| psych_key_remove(key) if key }
+      end
+
+      def clear
+        super.tap { @psych_keys.clear }
+      end
+
+      def merge!(other)
+        super.tap do
+          other.each do |key, value|
+            psych_key_remove(key)
+            @psych_keys << PsychKey.new(key, value)
+          end
+        end
+      end
+
+      alias_method :update, :merge!
+
+      def replace(other)
+        super.tap do
+          @psych_keys.clear
+          other.each { |key, value| @psych_keys << PsychKey.new(key, value) }
+        end
+      end
+
+      def compact!
+        super.tap do
+          @psych_keys.reject! { |psych_key| psych_key.value_node.nil? }
+        end
+      end
+
+      private
+
+      def psych_key_node(psych_key)
+        key = psych_key.key_node
+
+        if key.is_a?(LoadedHash) || key.is_a?(LoadedObject)
+          key.__getobj__
+        else
+          key
+        end
+      end
+
+      def psych_key_remove(key)
+        @psych_keys.reject! do |psych_key|
+          psych_key_node(psych_key).eql?(key)
+        end
       end
     end
 
