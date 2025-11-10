@@ -161,6 +161,18 @@ module Psych
           assert_equal(expected, dump("a:\n- 1"))
         end
 
+        def test_sequence_block_comments
+          expected = <<~YAML
+          ---
+          a:
+          - 1
+          # comment
+          - 2
+          YAML
+
+          assert_equal(expected, dump(expected))
+        end
+
         def test_sequence_flow
           expected = <<~YAML
           ---

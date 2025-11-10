@@ -26,11 +26,13 @@ when "compare"
 when "console"
   require "irb"
   IRB.start(__FILE__)
+when "dump"
+  puts Psych::Pure.dump(Psych::Pure.load(read_source(ARGV.shift), comments: true))
 when "load"
   pp Psych::Pure.load(read_source(ARGV.shift))
 when "parse"
   pp Psych::Pure.parse(read_source(ARGV.shift))
 else
-  warn("Usage: pp [cat|compare|console|load|parse] [file]")
+  warn("Usage: pp [cat|compare|console|dump|load|parse] [file]")
   exit(1)
 end

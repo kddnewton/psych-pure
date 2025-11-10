@@ -176,6 +176,20 @@ module Psych
       def trailing_comment(comment)
         @trailing << comment
       end
+
+      # Execute the given block without the leading comments being visible. This
+      # is used when a node has already handled its child nodes' leading
+      # comments, so they should not be processed again.
+      def without_leading
+        leading = @leading
+
+        begin
+          @leading = []
+          yield
+        ensure
+          @leading = leading
+        end
+      end
     end
 
     # Wraps a Ruby object with its node from the source input.
@@ -829,9 +843,7 @@ module Psych
         @source = Source.new(yaml)
         @comments = {} if comments
 
-        raise_syntax_error("Parser failed to complete") unless parse_l_yaml_stream
-        raise_syntax_error("Parser finished before end of input") unless @scanner.eos?
-
+        parse_l_yaml_stream
         @comments = nil if comments
         true
       end
@@ -1328,11 +1340,8 @@ module Psych
       #   b-comment
       def parse_s_b_comment
         try do
-          try do
-            if parse_s_separate_in_line
-              parse_c_nb_comment_text(true)
-              true
-            end
+          if parse_s_separate_in_line
+            parse_c_nb_comment_text(true)
           end
 
           parse_b_comment
@@ -2131,12 +2140,9 @@ module Psych
           if parse_ns_flow_seq_entry(n, c)
             parse_s_separate(n, c)
 
-            try do
-              if match(",")
-                parse_s_separate(n, c)
-                parse_ns_s_flow_seq_entries(n, c)
-                true
-              end
+            if match(",")
+              parse_s_separate(n, c)
+              parse_ns_s_flow_seq_entries(n, c)
             end
 
             true
@@ -3262,34 +3268,32 @@ module Psych
       def parse_l_yaml_stream
         events_push_flush_properties(StreamStart.new(Location.point(@source, @scanner.pos)))
 
-        if try {
-          if parse_l_document_prefix
-            @document_start_event = DocumentStart.new(Location.point(@source, @scanner.pos))
-            @tag_directives = @document_start_event.tag_directives
-            @document_end_event = nil
+        star { parse_l_document_prefix }
+        @document_start_event = DocumentStart.new(Location.point(@source, @scanner.pos))
+        @tag_directives = @document_start_event.tag_directives
+        @document_end_event = nil
+        parse_l_any_document
 
-            parse_l_any_document
-            star do
-              try do
-                if parse_l_document_suffix
-                  star { parse_l_document_prefix }
-                  parse_l_any_document
-                  true
-                end
-              end ||
-              try do
-                if parse_l_document_prefix
-                  parse_l_explicit_document
-                  true
-                end
-              end
+        star do
+          try do
+            if parse_l_document_suffix
+              star { parse_l_document_prefix }
+              parse_l_any_document
+              true
+            end
+          end ||
+          try do
+            if parse_l_document_prefix
+              parse_l_explicit_document
+              true
             end
           end
-        } then
-          document_end_event_flush
-          events_push_flush_properties(StreamEnd.new(Location.point(@source, @scanner.pos)))
-          true
         end
+
+        raise_syntax_error("Parser finished before end of input") unless @scanner.eos?
+        document_end_event_flush
+        events_push_flush_properties(StreamEnd.new(Location.point(@source, @scanner.pos)))
+        true
       end
 
       # ------------------------------------------------------------------------
@@ -3365,6 +3369,9 @@ module Psych
 
       # Represents the nil value.
       class NilNode < Node
+        def accept(visitor)
+          raise "Visiting NilNode is not supported"
+        end
       end
 
       # Represents a generic object that is not matched by any of the other node
@@ -3535,12 +3542,38 @@ module Psych
             @q.breakable
           end
 
-          @q.seplist(contents, -> { @q.breakable }) do |element|
+          current_line = nil
+          contents.each_with_index do |element, index|
+            psych_node = element.psych_node
+            leading = psych_node&.comments&.leading
+
+            if index > 0
+              @q.breakable
+
+              if current_line && psych_node
+                start_line = (leading&.first || psych_node).start_line
+                @q.breakable if start_line - current_line >= 2
+              end
+            end
+
+            current_line = psych_node&.end_line
+            visit_leading_comments(leading) if leading&.any?
+
+            if psych_node && (trailing = psych_node.comments.trailing).any?
+              current_line = trailing.last.end_line
+            end
+
             @q.text("-")
             next if element.is_a?(NilNode)
 
             @q.text(" ")
-            @q.nest(2) { visit(element) }
+            @q.nest(2) do
+              if psych_node
+                psych_node.comments.without_leading { visit(element) }
+              else
+                visit(element)
+              end
+            end
           end
 
           @q.current_group.break
@@ -3696,23 +3729,29 @@ module Psych
           end
         end
 
+        # Visit the leading comments for a node, printing them out with proper
+        # line breaks.
+        def visit_leading_comments(comments)
+          line = nil
+
+          comments.each do |comment|
+            while line && line < comment.start_line
+              @q.breakable
+              line += 1
+            end
+
+            @q.text(comment.value)
+            line = comment.end_line
+          end
+
+          @q.breakable
+        end
+
         # Print out the leading and trailing comments of a node, as well as
         # yielding the value of the node to the block.
         def with_comments(node)
           if (comments = node.psych_node&.comments) && (leading = comments.leading).any?
-            line = nil
-
-            leading.each do |comment|
-              while line && line < comment.start_line
-                @q.breakable
-                line += 1
-              end
-
-              @q.text(comment.value)
-              line = comment.end_line
-            end
-
-            @q.breakable
+            visit_leading_comments(leading)
           end
 
           yield node.value
