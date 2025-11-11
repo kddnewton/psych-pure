@@ -13,7 +13,7 @@ module Psych
     #
     # The bug: Hash mutation methods (delete, clear, etc.) were not updating @psych_keys,
     # causing deleted keys to reappear in the dump output.
-    class LoadedHashMutationTest < Minitest::Test
+    class LoadedHashTest < Minitest::Test
       def test_aset
         yaml = <<~YAML
           ---

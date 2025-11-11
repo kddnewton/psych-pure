@@ -201,15 +201,37 @@ module Psych
       # rely on the source formatting, and need to format it ourselves.
       attr_reader :dirty
 
-      def initialize(object, psych_node, dirty = false)
+      def initialize(object, psych_node)
         super(object)
         @psych_node = psych_node
-        @dirty = dirty
+        @dirty = false
       end
 
-      def replace(psych_node)
-        @psych_node = psych_node
-        @dirty = true
+      def initialize_clone(obj, freeze: nil)
+        super
+        @psych_node = obj.psych_node.dup
+      end
+
+      def initialize_dup(obj)
+        super
+        @psych_node = obj.psych_node.dup
+      end
+
+      # Effectively implement the same method_missing as SimpleDelegator, but
+      # additionally track whether or not the object has been mutated.
+      ruby2_keywords def method_missing(name, *args, &block)
+        takes_block = false
+        target = self.__getobj__ { takes_block = true }
+
+        if !takes_block && target_respond_to?(target, name, false)
+          previous = target.dup
+          result = target.__send__(name, *args, &block)
+
+          @dirty = true unless previous.eql?(target)
+          result
+        else
+          super(name, *args, &block)
+        end
       end
     end
 

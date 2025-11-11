@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 ## [Unreleased]
 
 - Add `sequence_indent` option to `Psych::Pure.dump` to control whether sequence elements contained within mapping elements are indented.
+- Properly handle mutation methods on loaded objects that mutate in place.
 
 ## [0.1.4] - 2025-11-10
 
