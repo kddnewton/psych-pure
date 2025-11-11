@@ -56,10 +56,21 @@ module Psych
           assert_equal(expected, dump("a" => []))
         end
 
+        def test_sequence_indent
+          expected = <<~YAML
+          ---
+          a:
+            - 1
+            - 2
+          YAML
+
+          assert_equal(expected, dump({ "a" => [1, 2] }, sequence_indent: true))
+        end
+
         private
 
-        def dump(object)
-          Pure.dump(object)
+        def dump(object, options = {})
+          Pure.dump(object, options)
         end
       end
 
@@ -182,6 +193,17 @@ module Psych
           assert_equal(expected, dump("a: [1]"))
         end
 
+        def test_sequence_indent
+          expected = <<~YAML
+          ---
+          a:
+            - 1
+            - 2
+          YAML
+
+          assert_equal(expected, dump("a:\n- 1\n- 2", sequence_indent: true))
+        end
+
         def test_string_literal_block
           expected = <<~YAML
           ---
@@ -234,8 +256,11 @@ module Psych
 
         private
 
-        def dump(source)
-          Pure.dump(Pure.load(source, aliases: true, permitted_classes: [Date, Time], comments: true))
+        def dump(source, options = {})
+          Pure.dump(
+            Pure.load(source, aliases: true, permitted_classes: [Date, Time], comments: true),
+            options
+          )
         end
       end
     end

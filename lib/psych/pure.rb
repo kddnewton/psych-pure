@@ -3559,8 +3559,9 @@ module Psych
       # The visitor is responsible for walking the tree and generating the YAML
       # output.
       class Visitor
-        def initialize(q)
+        def initialize(q, sequence_indent: false)
           @q = q
+          @sequence_indent = sequence_indent
         end
 
         # Visit an AliasNode.
@@ -3777,6 +3778,11 @@ module Psych
             elsif inlined || value.anchor || value.tag || value.value.empty?
               @q.text(" ")
               @q.nest(2) { visit(value) }
+            elsif @sequence_indent
+              @q.nest(2) do
+                @q.breakable
+                visit(value)
+              end
             else
               @q.breakable
               visit(value)
@@ -4006,7 +4012,7 @@ module Psych
             q.text(" ")
           end
 
-          node.accept(Visitor.new(q))
+          node.accept(Visitor.new(q, sequence_indent: @options.fetch(:sequence_indent, false)))
           q.breakable
           q.current_group.break
           q.flush

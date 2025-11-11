@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 
 ## [Unreleased]
 
+- Add `sequence_indent` option to `Psych::Pure.dump` to control whether sequence elements contained within mapping elements are indented.
+
 ## [0.1.4] - 2025-11-10
 
 - Fix up comment handling preceding sequence elements.
