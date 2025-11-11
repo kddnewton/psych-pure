@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 
 ## [Unreleased]
 
+## [0.2.0] - 2025-11-11
+
 - Add `sequence_indent` option to `Psych::Pure.dump` to control whether sequence elements contained within mapping elements are indented.
 - Properly handle mutation methods on loaded objects that mutate in place.
 
@@ -40,7 +42,9 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 
 - 🎉 Initial release. 🎉
 
-[unreleased]: https://github.com/kddnewton/psych-pure/compare/v0.1.3...HEAD
+[unreleased]: https://github.com/kddnewton/psych-pure/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kddnewton/psych-pure/compare/v0.1.4...v0.2.0
+[0.1.4]: https://github.com/kddnewton/psych-pure/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/kddnewton/psych-pure/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kddnewton/psych-pure/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kddnewton/psych-pure/compare/v0.1.0...v0.1.1
