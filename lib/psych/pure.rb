@@ -1534,12 +1534,12 @@ module Psych
       #   ( c = flow-key => s-separate-in-line )
       def parse_s_separate(n, c)
         case c
-        when :block_in then parse_s_separate_lines(n)
+        when :block_in then parse_s_separate_lines(n, c)
         when :block_key then parse_s_separate_in_line
-        when :block_out then parse_s_separate_lines(n)
-        when :flow_in then parse_s_separate_lines(n)
+        when :block_out then parse_s_separate_lines(n, c)
+        when :flow_in then parse_s_separate_lines(n, c)
         when :flow_key then parse_s_separate_in_line
-        when :flow_out then parse_s_separate_lines(n)
+        when :flow_out then parse_s_separate_lines(n, c)
         else raise InternalException, c.inspect
         end
       end
@@ -1549,9 +1549,21 @@ module Psych
       #   ( s-l-comments
       #   s-flow-line-prefix(n) )
       #   | s-separate-in-line
-      def parse_s_separate_lines(n)
-        try { parse_s_l_comments && parse_s_flow_line_prefix(n) } ||
-          parse_s_separate_in_line
+      def parse_s_separate_lines(n, c)
+        if c == :flow_in || c == :flow_out
+          # In flow contexts, indentation is flexible after comments/newlines
+          # but must maintain at least the base indentation level
+          if parse_s_l_comments
+            parse_s_flow_line_prefix(n) ||
+              try { parse_s_indent(n) && parse_s_separate_in_line }
+          else
+            parse_s_separate_in_line
+          end
+        else
+          # In block contexts, follow the spec strictly
+          try { parse_s_l_comments && parse_s_flow_line_prefix(n) } ||
+            parse_s_separate_in_line
+        end
       end
 
       # [082]
@@ -2275,6 +2287,7 @@ module Psych
 
             parse_s_separate(n, c)
             parse_ns_s_flow_seq_entries(n, parse_in_flow(c))
+            parse_s_separate(n, c)
 
             if match("]")
               events_push_flush_properties(SequenceEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
@@ -2323,6 +2336,7 @@ module Psych
 
             parse_s_separate(n, c)
             parse_ns_s_flow_map_entries(n, parse_in_flow(c))
+            parse_s_separate(n, c)
 
             if match("}")
               events_push_flush_properties(MappingEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
