@@ -74,6 +74,10 @@ module Psych
       def column(offset)
         offset - @line_offsets[line(offset)]
       end
+
+      def point(offset)
+        "line #{line(offset) + 1} column #{column(offset)}"
+      end
     end
 
     # A location represents a range of bytes in the input string.
@@ -931,6 +935,123 @@ module Psych
     # The parser is responsible for taking a YAML string and converting it into
     # a series of events that can be used by the consumer.
     class Parser
+      # A stack of contexts that the parser is currently within. We use this to
+      # decorate error messages with the context in which they occurred.
+      class Context
+        class BlockMapping
+          attr_reader :pos, :indent
+
+          def initialize(pos, indent)
+            @pos = pos
+            @indent = indent
+          end
+
+          def format(source)
+            "block mapping at #{source.point(pos)}#{indent == -1 ? "" : " (indent=#{indent})"}"
+          end
+        end
+
+        class BlockSequence
+          attr_reader :pos, :indent
+
+          def initialize(pos, indent)
+            @pos = pos
+            @indent = indent
+          end
+
+          def format(source)
+            "block sequence at #{source.point(pos)}#{indent == -1 ? "" : " (indent=#{indent})"}"
+          end
+        end
+
+        class DoubleQuotedScalar
+          attr_reader :pos
+
+          def initialize(pos)
+            @pos = pos
+          end
+
+          def format(source)
+            "double quoted scalar at #{source.point(pos)}"
+          end
+        end
+
+        class FlowMapping
+          attr_reader :pos, :context
+
+          def initialize(pos, context)
+            @pos = pos
+            @context = context
+          end
+
+          def format(source)
+            "flow mapping at #{source.point(pos)} (context=#{context})"
+          end
+        end
+
+        class FlowSequence
+          attr_reader :pos, :context
+
+          def initialize(pos, context)
+            @pos = pos
+            @context = context
+          end
+
+          def format(source)
+            "flow sequence at #{source.point(pos)} (context=#{context})"
+          end
+        end
+
+        private_constant :BlockMapping, :BlockSequence, :DoubleQuotedScalar, :FlowMapping, :FlowSequence
+
+        def initialize
+          @contexts = []
+          @deepest = []
+        end
+
+        def syntax_error(source, filename, pos, message)
+          unless (stack = (@contexts.empty? ? @deepest : @contexts)).empty?
+            pos = stack.last.pos
+            message = "#{message}\nwithin:\n#{stack.map { |element| " #{element.format(source)}\n" }.join}"
+          end
+
+          SyntaxError.new(filename, source.line(pos), source.column(pos), pos, message, nil)
+        end
+
+        def within_block_mapping(pos, indent, &blk)
+          within(BlockMapping.new(pos, indent), &blk)
+        end
+
+        def within_block_sequence(pos, indent, &blk)
+          within(BlockSequence.new(pos, indent), &blk)
+        end
+
+        def within_double_quoted_scalar(pos, &blk)
+          within(DoubleQuotedScalar.new(pos), &blk)
+        end
+
+        def within_flow_mapping(pos, context, &blk)
+          within(FlowMapping.new(pos, context), &blk)
+        end
+
+        def within_flow_sequence(pos, context, &blk)
+          within(FlowSequence.new(pos, context), &blk)
+        end
+
+        private
+
+        def within(object)
+          @contexts.push(object)
+          @deepest = @contexts.dup if @contexts.length > @deepest.length
+
+          begin
+            yield
+          ensure
+            @contexts.pop
+          end
+        end
+      end
+
       # Initialize a new parser with the given source string.
       def initialize(handler)
         # These are used to track the current state of the parser.
@@ -974,6 +1095,11 @@ module Psych
         # This parser can optionally parse comments and attach them to the
         # resulting tree, if the option is passed.
         @comments = nil
+
+        # The context of the parser at any given time, which is used to decorate
+        # error messages to make it easier to find the specific location where
+        # they occurred.
+        @context = Context.new
       end
 
       # Top-level parse function that starts the parsing process.
@@ -1007,9 +1133,7 @@ module Psych
 
       # Raise a syntax error with the given message.
       def raise_syntax_error(message)
-        line = @source.line(@scanner.pos)
-        column = @source.column(@scanner.pos)
-        raise SyntaxError.new(@filename, line, column, @scanner.pos, message, nil)
+        raise @context.syntax_error(@source, @filename, @scanner.pos, message)
       end
 
       # ------------------------------------------------------------------------
@@ -1878,30 +2002,32 @@ module Psych
       def parse_c_double_quoted(n, c)
         pos_start = @scanner.pos
 
-        if try { match("\"") && parse_nb_double_text(n, c) && match("\"") }
-          end1 = "(?:\\\\\\r?\\n[ \\t]*)"
-          end2 = "(?:[ \\t]*\\r?\\n[ \\t]*)"
-          hex = "[0-9a-fA-F]"
-          hex2 = "(?:\\\\x(#{hex}{2}))"
-          hex4 = "(?:\\\\u(#{hex}{4}))"
-          hex8 = "(?:\\\\U(#{hex}{8}))"
+        @context.within_double_quoted_scalar(@scanner.pos) do
+          if try { match("\"") && parse_nb_double_text(n, c) && match("\"") }
+            end1 = "(?:\\\\\\r?\\n[ \\t]*)"
+            end2 = "(?:[ \\t]*\\r?\\n[ \\t]*)"
+            hex = "[0-9a-fA-F]"
+            hex2 = "(?:\\\\x(#{hex}{2}))"
+            hex4 = "(?:\\\\u(#{hex}{4}))"
+            hex8 = "(?:\\\\U(#{hex}{8}))"
 
-          value = from(pos_start).byteslice(1...-1)
-          value.gsub!(%r{(?:\r\n|#{end1}|#{end2}+|#{hex2}|#{hex4}|#{hex8}|\\[\\ "/_0abefnrt\tvLNP])}) do |m|
-            case m
-            when /\A(?:#{hex2}|#{hex4}|#{hex8})\z/o
-              m[2..].to_i(16).chr(Encoding::UTF_8)
-            when /\A#{end1}\z/o
-              ""
-            when /\A#{end2}+\z/o
-              m.sub(/#{end2}/, "").gsub(/#{end2}/, "\n").then { |r| r.empty? ? " " : r }
-            else
-              C_DOUBLE_QUOTED_UNESCAPES.fetch(m, m)
+            value = from(pos_start).byteslice(1...-1)
+            value.gsub!(%r{(?:\r\n|#{end1}|#{end2}+|#{hex2}|#{hex4}|#{hex8}|\\[\\ "/_0abefnrt\tvLNP])}) do |m|
+              case m
+              when /\A(?:#{hex2}|#{hex4}|#{hex8})\z/o
+                m[2..].to_i(16).chr(Encoding::UTF_8)
+              when /\A#{end1}\z/o
+                ""
+              when /\A#{end2}+\z/o
+                m.sub(/#{end2}/, "").gsub(/#{end2}/, "\n").then { |r| r.empty? ? " " : r }
+              else
+                C_DOUBLE_QUOTED_UNESCAPES.fetch(m, m)
+              end
             end
-          end
 
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start), value, Nodes::Scalar::DOUBLE_QUOTED))
-          true
+            events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start), value, Nodes::Scalar::DOUBLE_QUOTED))
+            true
+          end
         end
       end
 
@@ -2271,14 +2397,16 @@ module Psych
       def parse_c_flow_sequence(n, c)
         try do
           if match("[")
-            events_push_flush_properties(SequenceStart.new(Location.new(@source, @scanner.pos - 1, @scanner.pos), Nodes::Sequence::FLOW))
+            @context.within_flow_sequence(@scanner.pos, c) do
+              events_push_flush_properties(SequenceStart.new(Location.new(@source, @scanner.pos - 1, @scanner.pos), Nodes::Sequence::FLOW))
 
-            parse_s_separate(n, c)
-            parse_ns_s_flow_seq_entries(n, parse_in_flow(c))
+              parse_s_separate(n, c)
+              parse_ns_s_flow_seq_entries(n, parse_in_flow(c))
 
-            if match("]")
-              events_push_flush_properties(SequenceEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
-              true
+              if match("]")
+                events_push_flush_properties(SequenceEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
+                true
+              end
             end
           end
         end
@@ -2319,14 +2447,16 @@ module Psych
       def parse_c_flow_mapping(n, c)
         try do
           if match("{")
-            events_push_flush_properties(MappingStart.new(Location.new(@source, @scanner.pos - 1, @scanner.pos), Nodes::Mapping::FLOW))
+            @context.within_flow_mapping(@scanner.pos, c) do
+              events_push_flush_properties(MappingStart.new(Location.new(@source, @scanner.pos - 1, @scanner.pos), Nodes::Mapping::FLOW))
 
-            parse_s_separate(n, c)
-            parse_ns_s_flow_map_entries(n, parse_in_flow(c))
+              parse_s_separate(n, c)
+              parse_ns_s_flow_map_entries(n, parse_in_flow(c))
 
-            if match("}")
-              events_push_flush_properties(MappingEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
-              true
+              if match("}")
+                events_push_flush_properties(MappingEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
+                true
+              end
             end
           end
         end
@@ -3039,18 +3169,20 @@ module Psych
       def parse_l_block_sequence(n)
         return false if (m = detect_indent(n)) == 0
 
-        events_cache_push
-        events_push_flush_properties(SequenceStart.new(Location.point(@source, @scanner.pos), Nodes::Sequence::BLOCK))
+        @context.within_block_sequence(@scanner.pos, n) do
+          events_cache_push
+          events_push_flush_properties(SequenceStart.new(Location.point(@source, @scanner.pos), Nodes::Sequence::BLOCK))
 
-        if try { plus { try { parse_s_indent(n + m) && parse_c_l_block_seq_entry(n + m) } } }
-          events_cache_flush
-          events_push_flush_properties(SequenceEnd.new(Location.point(@source, @scanner.pos)))
-          true
-        else
-          event = events_cache_pop[0]
-          @anchor = event.anchor
-          @tag = event.tag
-          false
+          if try { plus { try { parse_s_indent(n + m) && parse_c_l_block_seq_entry(n + m) } } }
+            events_cache_flush
+            events_push_flush_properties(SequenceEnd.new(Location.point(@source, @scanner.pos)))
+            true
+          else
+            event = events_cache_pop[0]
+            @anchor = event.anchor
+            @tag = event.tag
+            false
+          end
         end
       end
 
@@ -3115,16 +3247,18 @@ module Psych
       def parse_l_block_mapping(n)
         return false if (m = detect_indent(n)) == 0
 
-        events_cache_push
-        events_push_flush_properties(MappingStart.new(Location.point(@source, @scanner.pos), Nodes::Mapping::BLOCK))
+        @context.within_block_mapping(@scanner.pos, n) do
+          events_cache_push
+          events_push_flush_properties(MappingStart.new(Location.point(@source, @scanner.pos), Nodes::Mapping::BLOCK))
 
-        if try { plus { try { parse_s_indent(n + m) && parse_ns_l_block_map_entry(n + m) } } }
-          events_cache_flush
-          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
-          true
-        else
-          events_cache_pop
-          false
+          if try { plus { try { parse_s_indent(n + m) && parse_ns_l_block_map_entry(n + m) } } }
+            events_cache_flush
+            events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
+            true
+          else
+            events_cache_pop
+            false
+          end
         end
       end
 
