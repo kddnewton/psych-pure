@@ -10,7 +10,7 @@ GEM
   specs:
     date (3.5.1)
     docile (1.4.1)
-    minitest (5.26.2)
+    minitest (5.27.0)
     psych (5.3.0)
       date
       stringio
