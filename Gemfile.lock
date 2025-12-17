@@ -22,7 +22,7 @@ GEM
     simplecov-html (0.13.1)
     simplecov_json_formatter (0.1.4)
     stringio (3.2.0)
-    strscan (3.1.5)
+    strscan (3.1.6)
 
 PLATFORMS
   arm64-darwin-23
