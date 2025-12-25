@@ -649,8 +649,8 @@ module Psych
           defined?(@comments)
         end
 
-        def to_ruby(symbolize_names: false, freeze: false, strict_integer: false, comments: false)
-          Visitors::ToRuby.create(symbolize_names: symbolize_names, freeze: freeze, strict_integer: strict_integer, comments: comments).accept(self)
+        def to_ruby(symbolize_names: false, freeze: false, strict_integer: false, parse_symbols: true, comments: false)
+          Visitors::ToRuby.create(symbolize_names: symbolize_names, freeze: freeze, strict_integer: strict_integer, parse_symbols: parse_symbols, comments: comments).accept(self)
         end
       end
 
@@ -736,9 +736,9 @@ module Psych
 
       # Extend the ToRuby singleton to be able to pass the comments option.
       module ToRubySingleton
-        def create(symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+        def create(symbolize_names: false, freeze: false, strict_integer: false, parse_symbols: true, comments: false)
           class_loader = ClassLoader.new
-          scanner = ScalarScanner.new(class_loader, strict_integer: strict_integer)
+          scanner = ScalarScanner.new(class_loader, strict_integer: strict_integer, parse_symbols: parse_symbols)
           new(scanner, class_loader, symbolize_names: symbolize_names, freeze: freeze, comments: comments)
         end
       end
@@ -4355,19 +4355,19 @@ module Psych
       end
     end
 
-    def self.unsafe_load(yaml, filename: nil, fallback: false, symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+    def self.unsafe_load(yaml, filename: nil, fallback: false, symbolize_names: false, freeze: false, strict_integer: false, parse_symbols: true, comments: false)
       result = parse(yaml, filename: filename, comments: comments)
       return fallback unless result
 
-      result.to_ruby(symbolize_names: symbolize_names, freeze: freeze, strict_integer: strict_integer, comments: comments)
+      result.to_ruby(symbolize_names: symbolize_names, freeze: freeze, strict_integer: strict_integer, parse_symbols: parse_symbols, comments: comments)
     end
 
-    def self.safe_load(yaml, permitted_classes: [], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+    def self.safe_load(yaml, permitted_classes: [], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, parse_symbols: true, comments: false)
       result = parse(yaml, filename: filename, comments: comments)
       return fallback unless result
 
       class_loader = ClassLoader::Restricted.new(permitted_classes.map(&:to_s), permitted_symbols.map(&:to_s))
-      scanner = ScalarScanner.new(class_loader, strict_integer: strict_integer)
+      scanner = ScalarScanner.new(class_loader, strict_integer: strict_integer, parse_symbols: parse_symbols)
       visitor =
         if aliases
           Visitors::ToRuby.new(scanner, class_loader, symbolize_names: symbolize_names, freeze: freeze, comments: comments)
@@ -4378,7 +4378,7 @@ module Psych
       visitor.accept(result)
     end
 
-    def self.load(yaml, permitted_classes: [Symbol], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, comments: false)
+    def self.load(yaml, permitted_classes: [Symbol], permitted_symbols: [], aliases: false, filename: nil, fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, parse_symbols: true, comments: false)
       safe_load(
         yaml,
         permitted_classes: permitted_classes,
@@ -4389,6 +4389,7 @@ module Psych
         symbolize_names: symbolize_names,
         freeze: freeze,
         strict_integer: strict_integer,
+        parse_symbols: parse_symbols,
         comments: comments
       )
     end
@@ -4405,6 +4406,21 @@ module Psych
 
       return fallback if result.is_a?(Array) && result.empty?
       result
+    end
+
+    def self.safe_load_stream(yaml, filename: nil, permitted_classes: [], aliases: false, comments: false)
+      documents = parse_stream(yaml, filename: filename).children.map do |child|
+        stream = Psych::Nodes::Stream.new
+        stream.children << child
+        safe_load(stream.to_yaml, permitted_classes: permitted_classes, aliases: aliases, comments: comments)
+      end
+
+      if block_given?
+        documents.each { |doc| yield doc }
+        nil
+      else
+        documents
+      end
     end
 
     def self.unsafe_load_file(filename, **kwargs)
