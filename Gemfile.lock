@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    psych-pure (0.2.0)
+    psych-pure (0.3.0)
       psych
       strscan
 
