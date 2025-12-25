@@ -15,6 +15,17 @@ module Psych
     end
   end
 
+  # If Psych is older than 5.3, we need to modify the ScalarScanner to add the
+  # parse_symbols parameter so that we can use it consistently when we
+  # initialize it.
+  if Psych::VERSION < "5.3"
+    ScalarScanner.prepend(Module.new {
+      def initialize(class_loader, strict_integer: false, parse_symbols: true)
+        super(class_loader, strict_integer: strict_integer)
+      end
+    })
+  end
+
   # A YAML parser written in Ruby.
   module Pure
     # An internal exception is an exception that should not have occurred. It is
