@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    psych-pure (0.2.0)
+    psych-pure (0.3.0)
       psych
       strscan
 
@@ -12,7 +12,7 @@ GEM
     docile (1.4.1)
     minitest (6.0.0)
       prism (~> 1.5)
-    prism (1.6.0)
+    prism (1.7.0)
     psych (5.3.1)
       date
       stringio
@@ -21,7 +21,7 @@ GEM
       docile (~> 1.1)
       simplecov-html (~> 0.11)
       simplecov_json_formatter (~> 0.1)
-    simplecov-html (0.13.1)
+    simplecov-html (0.13.2)
     simplecov_json_formatter (0.1.4)
     stringio (3.2.0)
     strscan (3.1.6)
