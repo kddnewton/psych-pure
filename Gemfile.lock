@@ -10,7 +10,7 @@ GEM
   specs:
     date (3.5.1)
     docile (1.4.1)
-    minitest (6.0.0)
+    minitest (6.0.1)
       prism (~> 1.5)
     prism (1.7.0)
     psych (5.3.1)
