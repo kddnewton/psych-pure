@@ -404,9 +404,25 @@ module Psych
       def merge!(*others)
         super
         others.each do |other|
-          other.each do |key, value|
-            psych_delete(key)
-            @psych_keys << PsychKey.new(key, value)
+          if other.is_a?(LoadedHash)
+            # When merging another LoadedHash, preserve its psych_keys to keep comments
+            other.psych_keys.each do |psych_key|
+              psych_delete(psych_unwrap(psych_key.key_node))
+              @psych_keys << psych_key.dup
+            end
+
+            # Merge comments from the other hash's psych_node
+            if other.psych_node&.comments? && (other_leading = other.psych_node.comments.leading).any?
+              if @psych_node&.comments?
+                @psych_node.comments.leading.concat(other_leading)
+              end
+            end
+          else
+            # Regular hash - just wrap keys and values
+            other.each do |key, value|
+              psych_delete(key)
+              @psych_keys << PsychKey.new(key, value)
+            end
           end
         end
 

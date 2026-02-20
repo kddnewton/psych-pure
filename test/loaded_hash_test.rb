@@ -359,6 +359,30 @@ module Psych
         assert_includes output, "a: 1"
         refute_includes output, "b:"
       end
+
+      def test_merge_preserves_comments_from_both_hashes
+        yaml1 = <<~YAML
+          # YAML 1
+          a: 1
+        YAML
+
+        yaml2 = <<~YAML
+          # YAML 2
+          b: 2
+        YAML
+
+        content1 = Psych::Pure.load(yaml1, comments: true)
+        content2 = Psych::Pure.load(yaml2, comments: true)
+        content3 = content1.merge(content2)
+
+        output = Psych::Pure.dump(content3)
+
+        # Both comments should be preserved
+        assert_includes output, "# YAML 1"
+        assert_includes output, "# YAML 2"
+        assert_includes output, "a: 1"
+        assert_includes output, "b: 2"
+      end
     end
   end
 end
