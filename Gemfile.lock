@@ -10,9 +10,11 @@ GEM
   specs:
     date (3.5.1)
     docile (1.4.1)
-    minitest (6.0.1)
+    drb (2.2.3)
+    minitest (6.0.2)
+      drb (~> 2.0)
       prism (~> 1.5)
-    prism (1.7.0)
+    prism (1.9.0)
     psych (5.3.1)
       date
       stringio
