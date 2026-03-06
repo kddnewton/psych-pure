@@ -3433,7 +3433,8 @@ module Psych
           events_cache_push
           events_push_flush_properties(SequenceStart.new(Location.point(@source, @scanner.pos), Nodes::Sequence::BLOCK))
 
-          if try { plus { try { parse_s_indent(n + m) && parse_c_l_block_seq_entry(n + m) } } }
+          indent = n + m
+          if try { plus { try { parse_s_indent(indent) && (parse_fast_seq_entry(indent) || parse_c_l_block_seq_entry(indent)) } } }
             events_cache_flush
             events_push_flush_properties(SequenceEnd.new(Location.point(@source, @scanner.pos)))
             true
@@ -3444,6 +3445,55 @@ module Psych
             false
           end
         end
+      end
+
+      # Regex for the fast path of block sequence entries. Matches:
+      #   "- " plain_value "\n"
+      # where the value is a simple plain scalar on a single line.
+      # Group 1 = value.
+      FAST_SEQ_ENTRY = /
+        -[ \t]+
+        (
+          (?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))  # ns-plain-first
+          (?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))* # nb-ns-plain-in-line
+        )
+        [ \t]*\n
+      /x.freeze
+      private_constant :FAST_SEQ_ENTRY
+
+      # Parse a block sequence entry using the fast path when possible to avoid
+      # going through the whole recursive descent parser.
+      def parse_fast_seq_entry(n)
+        # Only attempt when there are no pending properties and we're not in
+        # a bare document with forbidden content at this position.
+        return false if @anchor || @tag
+        return false if @in_bare_document && @forbidden_content[@scanner.pos]
+        return false unless @scanner.skip(FAST_SEQ_ENTRY)
+
+        # Check that the next line is not a continuation (indented deeper
+        # than the current sequence level) or a nested structure.
+        next_pos = @scanner.pos
+        if next_pos < @string.bytesize
+          next_indent = 0
+          next_indent += 1 while @string.getbyte(next_pos + next_indent) == 0x20
+          next_byte = @string.getbyte(next_pos + next_indent)
+
+          if next_indent > n && next_byte != nil && next_byte != 0x0A
+            @scanner.pos = next_pos - @scanner.matched_size
+            return false
+          end
+        end
+
+        value = @scanner[1]
+        value_start = next_pos - @scanner.matched_size + 2 # skip "- "
+        # Advance past any extra whitespace after "- "
+        value_start += 1 while @string.getbyte(value_start) == 0x20 || @string.getbyte(value_start) == 0x09
+        value_end = value_start + value.bytesize
+
+        events_push(Scalar.new(Location.new(@source, value_start, value_end), value, value, Nodes::Scalar::PLAIN))
+
+        star { parse_l_comment }
+        true
       end
 
       # [004]
@@ -3513,7 +3563,8 @@ module Psych
           events_cache_push
           events_push_flush_properties(MappingStart.new(Location.point(@source, @scanner.pos), Nodes::Mapping::BLOCK))
 
-          if try { plus { try { parse_s_indent(n + m) && parse_ns_l_block_map_entry(n + m) } } }
+          indent = n + m
+          if try { plus { try { parse_s_indent(indent) && (parse_fast_mapping_entry(indent) || parse_ns_l_block_map_entry(indent)) } } }
             events_cache_flush
             events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
             true
@@ -3522,6 +3573,73 @@ module Psych
             false
           end
         end
+      end
+
+      # Regex for the fast path of block mapping entries. Matches:
+      #   plain_key ": " plain_value "\n"
+      # where both key and value are simple plain scalars on a single line.
+      # Group 1 = key, group 2 = value.
+      #
+      # The key uses ns-plain-first + nb-ns-plain-in-line for block-key context.
+      # The value uses the same for flow-out context.
+      FAST_MAPPING_ENTRY = /
+        (
+          (?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))  # ns-plain-first
+          (?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))* # nb-ns-plain-in-line
+        )
+        :[ \t]+
+        (
+          (?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))  # ns-plain-first
+          (?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))* # nb-ns-plain-in-line
+        )
+        [ \t]*\n
+      /x.freeze
+      private_constant :FAST_MAPPING_ENTRY
+
+      # Parse a block mapping entry using the fast path when possible to avoid
+      # going through the whole recursive descent parser.
+      def parse_fast_mapping_entry(n)
+        # Only attempt when there are no pending properties and we're not in
+        # a bare document with forbidden content at this position.
+        return false if @anchor || @tag
+        return false if @in_bare_document && @forbidden_content[@scanner.pos]
+        return false unless @scanner.skip(FAST_MAPPING_ENTRY)
+
+        # Check that the next line is not a continuation (indented deeper
+        # than the current mapping level) or a block scalar/sequence.
+        next_pos = @scanner.pos
+        if next_pos < @string.bytesize
+          # Count leading spaces on the next line
+          next_indent = 0
+          next_indent += 1 while @string.getbyte(next_pos + next_indent) == 0x20
+          next_byte = @string.getbyte(next_pos + next_indent)
+
+          # If the next line is indented deeper than indent+1 (continuation)
+          # or is a blank/comment line that could be part of a multi-line value,
+          # back out and let the normal parser handle it.
+          if next_indent > n && next_byte != nil && next_byte != 0x0A
+            @scanner.pos = next_pos - @scanner.matched_size
+            return false
+          end
+        end
+
+        # Extract key and value from the match.
+        key = @scanner[1]
+        value = @scanner[2]
+
+        key_start = next_pos - @scanner.matched_size
+        key_end = key_start + key.bytesize
+        value_start = key_end + 1 # skip ':'
+        value_start += 1 while @string.getbyte(value_start) == 0x20 || @string.getbyte(value_start) == 0x09
+        value_end = value_start + value.bytesize
+
+        events_push(Scalar.new(Location.new(@source, key_start, key_end), key, key, Nodes::Scalar::PLAIN))
+        events_push(Scalar.new(Location.new(@source, value_start, value_end), value, value, Nodes::Scalar::PLAIN))
+
+        # Consume trailing blank/comment lines that the normal parser would
+        # handle via parse_s_l_comments in the value's block node path.
+        star { parse_l_comment }
+        true
       end
 
       # [188]
