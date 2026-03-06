@@ -1245,6 +1245,7 @@ module Psych
         # This functions as a list of temporary lists of events that may be
         # flushed into the handler if current context is matched.
         @events_cache = []
+        @events_cache_top = nil
 
         # These events are used to track the start and end of a document. They
         # are flushed into the main events list when a new document is started.
@@ -1356,7 +1357,14 @@ module Psych
       def match(value)
         if @in_bare_document
           return false if @scanner.eos?
-          return false if ((pos = @scanner.pos) == 0 || (@string.getbyte(pos - 1) == 0x0A)) && @scanner.check(/(?:---|\.\.\.)(?=\s|$)/)
+
+          if (pos = @scanner.pos) == 0 || @string.getbyte(pos - 1) == 0x0A
+            b = @string.getbyte(pos)
+            if (b == 0x2D || b == 0x2E) && @string.getbyte(pos + 1) == b && @string.getbyte(pos + 2) == b # --- or ...
+              after = @string.getbyte(pos + 3)
+              return false if after.nil? || after == 0x20 || after == 0x09 || after == 0x0A || after == 0x0D
+            end
+          end
         end
 
         @scanner.skip(value)
@@ -1431,12 +1439,16 @@ module Psych
 
       # Push a new temporary list onto the events cache.
       def events_cache_push
-        @events_cache << []
+        list = []
+        @events_cache << list
+        @events_cache_top = list
       end
 
       # Pop a temporary list from the events cache.
       def events_cache_pop
-        @events_cache.pop or raise InternalException
+        result = @events_cache.pop or raise InternalException
+        @events_cache_top = @events_cache.last
+        result
       end
 
       # Pop a temporary list from the events cache and flush it to the next
@@ -1449,7 +1461,9 @@ module Psych
       # recent temporary list if there is one, or flushed directly to the
       # handler.
       def events_push(event)
-        if @events_cache.empty?
+        if (top = @events_cache_top)
+          top << event
+        else
           if @document_start_event
             case event
             when MappingStart, SequenceStart, Scalar
@@ -1460,8 +1474,6 @@ module Psych
           end
 
           event.accept(@handler)
-        else
-          @events_cache.last << event
         end
       end
 
@@ -1691,7 +1703,7 @@ module Psych
       # s-separate-in-line ::=
       #   s-white+ | <start_of_line>
       def parse_s_separate_in_line
-        plus { parse_s_white } || start_of_line?
+        match(/[ \t]+/) || start_of_line?
       end
 
       # [067]
@@ -3177,7 +3189,7 @@ module Psych
       #   l-empty(n,block-in)*
       #   s-indent(n) nb-char+
       def parse_l_nb_literal_text(n)
-        events_cache_size = @events_cache[-1].size
+        events_cache_size = @events_cache_top.size
 
         try do
           if star { parse_l_empty(n, :block_in) } && parse_s_indent(n)
@@ -3191,7 +3203,7 @@ module Psych
             # When parsing all of the l_empty calls, we may have added a bunch
             # of empty lines to the events cache. We need to clear those out
             # here.
-            @events_cache[-1].slice!(events_cache_size..-1)
+            @events_cache_top.slice!(events_cache_size..-1)
             false
           end
         end
