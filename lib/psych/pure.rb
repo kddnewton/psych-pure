@@ -2130,8 +2130,9 @@ module Psych
       # c-ns-alias-node ::=
       #   '*' ns-anchor-name
       def parse_c_ns_alias_node
-        pos_start = @scanner.pos
+        return false unless @string.getbyte(@scanner.pos) == 0x2A # '*'
 
+        pos_start = @scanner.pos
         if try { match("*") && plus { parse_ns_anchor_char } }
           events_push_flush_properties(Alias.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start).byteslice(1..)))
           true
@@ -2977,11 +2978,16 @@ module Psych
         result
       end
 
+      JSON_CONTENT_STARTERS = { 0x5B => true, 0x7B => true, 0x27 => true, 0x22 => true }.freeze # [ { ' "
+      private_constant :JSON_CONTENT_STARTERS
+
       # [157]
       # c-flow-json-content(n,c) ::=
       #   c-flow-sequence(n,c) | c-flow-mapping(n,c)
       #   | c-single-quoted(n,c) | c-double-quoted(n,c)
       def parse_c_flow_json_content(n, c)
+        return unless JSON_CONTENT_STARTERS[@string.getbyte(@scanner.pos)]
+
         parse_c_flow_sequence(n, c) ||
           parse_c_flow_mapping(n, c) ||
           parse_c_single_quoted(n, c) ||
