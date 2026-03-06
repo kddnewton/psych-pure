@@ -2230,11 +2230,16 @@ module Psych
         end
       end
 
+      # Bulk regex: matches runs of valid double-quoted chars (including escape
+      # sequences) but not unescaped \ or " or line breaks.
+      NB_DOUBLE_ONE_LINE = /(?:[^\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/.freeze
+
       # [111]
       # nb-double-one-line ::=
       #   nb-double-char*
       def parse_nb_double_one_line
-        star { parse_nb_double_char }
+        match(NB_DOUBLE_ONE_LINE)
+        true
       end
 
       # [112]
@@ -2259,11 +2264,16 @@ module Psych
         parse_s_double_escaped(n) || parse_s_flow_folded(n)
       end
 
+      # Bulk regex: matches whitespace-separated non-whitespace double-quoted
+      # chars (including escape sequences).
+      NB_NS_DOUBLE_IN_LINE = /(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/.freeze
+
       # [114]
       # nb-ns-double-in-line ::=
       #   ( s-white* ns-double-char )*
       def parse_nb_ns_double_in_line
-        star { try { parse_s_white_star && parse_ns_double_char } }
+        match(NB_NS_DOUBLE_IN_LINE)
+        true
       end
 
       # [115]
@@ -2374,18 +2384,28 @@ module Psych
         end
       end
 
+      # Bulk regex: matches runs of valid single-quoted chars. Single quotes
+      # are escaped as '' (two consecutive quotes).
+      NB_SINGLE_ONE_LINE = /(?:[^'\n\r]|'')*/.freeze
+
       # [122]
       # nb-single-one-line ::=
       #   nb-single-char*
       def parse_nb_single_one_line
-        star { parse_nb_single_char }
+        match(NB_SINGLE_ONE_LINE)
+        true
       end
+
+      # Bulk regex: matches whitespace-separated non-whitespace single-quoted
+      # chars (including escaped quotes '').
+      NB_NS_SINGLE_IN_LINE = /(?:[ \t]*(?:[^ \t'\n\r]|''))*/.freeze
 
       # [123]
       # nb-ns-single-in-line ::=
       #   ( s-white* ns-single-char )*
       def parse_nb_ns_single_in_line
-        star { try { parse_s_white_star && parse_ns_single_char } }
+        match(NB_NS_SINGLE_IN_LINE)
+        true
       end
 
       # [124]
@@ -2418,28 +2438,21 @@ module Psych
         end
       end
 
+      # Bulk regex: first alternative matches ns-char excluding all
+      # c-indicators; second alternative matches ?:- followed by ns-plain-safe.
+      NS_PLAIN_FIRST_OUT = /[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF])/.freeze
+      NS_PLAIN_FIRST_IN  = /[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF])/.freeze
+
       # [126]
       # ns-plain-first(c) ::=
       #   ( ns-char - c-indicator )
       #   | ( ( '?' | ':' | '-' )
       #   <followed_by_an_ns-plain-safe(c)> )
       def parse_ns_plain_first(c)
-        begin
-          pos_start = @scanner.pos
-
-          if parse_ns_char
-            pos_end = @scanner.pos
-            @scanner.pos = pos_start
-
-            if match(/[-?:,\[\]{}#&*!|>'"%@`]/)
-              @scanner.pos = pos_start
-              false
-            else
-              @scanner.pos = pos_end
-              true
-            end
-          end
-        end || try { match(/[?:-]/) && peek { parse_ns_plain_safe(c) } }
+        case c
+        when :flow_out, :block_key then match(NS_PLAIN_FIRST_OUT)
+        when :flow_in, :flow_key then match(NS_PLAIN_FIRST_IN)
+        end
       end
 
       # [127]
@@ -2518,12 +2531,22 @@ module Psych
         end
       end
 
+      # Bulk regex matching the continuation of a plain scalar on one line.
+      # ns-plain-char allows non-whitespace chars except bare : and #, but
+      # permits :followed-by-non-space and non-space-preceding-#.
+      NB_NS_PLAIN_IN_LINE_OUT = /(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])#))*/.freeze
+      NB_NS_PLAIN_IN_LINE_IN  = /(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/.freeze
+
       # [132]
       # nb-ns-plain-in-line(c) ::=
       #   ( s-white*
       #   ns-plain-char(c) )*
       def parse_nb_ns_plain_in_line(c)
-        star { try { parse_s_white_star && parse_ns_plain_char(c) } }
+        case c
+        when :flow_out, :block_key then match(NB_NS_PLAIN_IN_LINE_OUT)
+        when :flow_in, :flow_key then match(NB_NS_PLAIN_IN_LINE_IN)
+        end
+        true
       end
 
       # [133]
