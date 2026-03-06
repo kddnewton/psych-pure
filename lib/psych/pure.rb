@@ -1300,6 +1300,7 @@ module Psych
 
         yaml += "\n" if !yaml.empty? && !yaml.end_with?("\n")
         @scanner = StringScanner.new(yaml)
+        @string = yaml
         @filename = filename
         @source = Source.new(yaml)
         @comments = {} if comments
@@ -1325,7 +1326,7 @@ module Psych
       # logic.
       def detect_indent(n)
         pos = @scanner.pos
-        in_seq = pos > 0 && @scanner.string.byteslice(pos - 1).match?(/[\-\?\:]/)
+        in_seq = pos > 0 && (b = @string.getbyte(pos - 1)) && (b == 0x2D || b == 0x3F || b == 0x3A)
 
         match = @scanner.check(%r{((?:\ *(?:\#.*)?\n)*)(\ *)}) or raise InternalException
         pre = @scanner[1]
@@ -1345,7 +1346,7 @@ module Psych
       # that was just matched by the scanner. It takes a position and returns
       # the input string from that position to the current scanner position.
       def from(pos)
-        @scanner.string.byteslice(pos...@scanner.pos)
+        @string.byteslice(pos, @scanner.pos - pos)
       end
 
       # This is the only way that the scanner is advanced. It checks if the
@@ -1355,7 +1356,7 @@ module Psych
       def match(value)
         if @in_bare_document
           return false if @scanner.eos?
-          return false if ((pos = @scanner.pos) == 0 || (@scanner.string.byteslice(pos - 1) == "\n")) && @scanner.check(/(?:---|\.\.\.)(?=\s|$)/)
+          return false if ((pos = @scanner.pos) == 0 || (@string.getbyte(pos - 1) == 0x0A)) && @scanner.check(/(?:---|\.\.\.)(?=\s|$)/)
         end
 
         @scanner.skip(value)
@@ -1394,7 +1395,7 @@ module Psych
       def start_of_line?
         (pos = @scanner.pos) == 0 ||
           @scanner.eos? ||
-          (@scanner.string.byteslice(pos - 1) == "\n")
+          (@string.getbyte(pos - 1) == 0x0A)
       end
 
       # This is our main backtracking mechanism. It attempts to parse forward
@@ -3139,7 +3140,7 @@ module Psych
           end
 
           location = Location.new(@source, pos_start, @scanner.pos).trim_comments
-          events_push_flush_properties(Scalar.new(location, @scanner.string.byteslice(location.range).chomp, value, Nodes::Scalar::LITERAL))
+          events_push_flush_properties(Scalar.new(location, @string.byteslice(location.range).chomp, value, Nodes::Scalar::LITERAL))
           true
         else
           @in_scalar = false
@@ -3238,7 +3239,7 @@ module Psych
           end
 
           location = Location.new(@source, pos_start, @scanner.pos).trim_comments
-          events_push_flush_properties(Scalar.new(location, @scanner.string.byteslice(location.range).chomp, value, Nodes::Scalar::FOLDED))
+          events_push_flush_properties(Scalar.new(location, @string.byteslice(location.range).chomp, value, Nodes::Scalar::FOLDED))
           true
         else
           @in_scalar = false
