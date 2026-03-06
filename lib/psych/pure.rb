@@ -1306,6 +1306,12 @@ module Psych
         @source = Source.new(yaml)
         @comments = {} if comments
 
+        # Precompute positions where --- or ... appear at start of a line
+        # followed by whitespace or end of string. These are forbidden content
+        # positions in bare documents.
+        @forbidden_content = {}
+        yaml.scan(/^(?:---|\.\.\.)(?=[\s]|\z)/m) { @forbidden_content[$~.begin(0)] = true }
+
         parse_l_yaml_stream
         @comments = nil if comments
         true
@@ -1355,18 +1361,7 @@ module Psych
       # regular expression). If it does, it advances the scanner and returns
       # true. If it does not, it returns false.
       def match(value)
-        if @in_bare_document
-          return false if @scanner.eos?
-
-          if (pos = @scanner.pos) == 0 || @string.getbyte(pos - 1) == 0x0A
-            b = @string.getbyte(pos)
-            if (b == 0x2D || b == 0x2E) && @string.getbyte(pos + 1) == b && @string.getbyte(pos + 2) == b # --- or ...
-              after = @string.getbyte(pos + 3)
-              return false if after.nil? || after == 0x20 || after == 0x09 || after == 0x0A || after == 0x0D
-            end
-          end
-        end
-
+        return false if @in_bare_document && @forbidden_content[@scanner.pos]
         @scanner.skip(value)
       end
 
