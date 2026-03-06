@@ -1642,8 +1642,10 @@ module Psych
       # [063]
       # s-indent(n) ::=
       #   s-space{n}
+      INDENT_STRINGS = Array.new(100) { |n| " " * n }.freeze
+
       def parse_s_indent(n)
-        match(/\u{20}{#{n}}/)
+        match(INDENT_STRINGS[n] || " " * n)
       end
 
       # [031]
