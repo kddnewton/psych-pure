@@ -39,24 +39,30 @@ module Psych
     # A source wraps the input string and provides methods to access line and
     # column information from a byte offset.
     class Source
+      NON_SPACE = /[^ ]/.freeze
+
       def initialize(string)
-        @line_offsets = []
+        @line_offsets = [0]
         @trimmable_lines = []
 
-        offset = 0
-        string.each_line do |line|
-          @line_offsets << offset
+        pos = 0
+        while (newline_idx = string.index("\n", pos))
+          non_space_idx = string.index(NON_SPACE, pos)
+
           @trimmable_lines <<
-            case line
-            when /\A *#.*\n\z/ then :comment
-            when /\A *\n\z/ then :blank
-            else false
+            if non_space_idx.nil? || non_space_idx >= newline_idx
+              :blank
+            elsif string.getbyte(non_space_idx) == 0x23 # '#'
+              :comment
+            else
+              false
             end
 
-          offset += line.bytesize
+          pos = newline_idx + 1
+          @line_offsets << pos
         end
 
-        @line_offsets << offset
+        @line_offsets << string.bytesize if @line_offsets.last != string.bytesize
         @trimmable_lines << true
       end
 
@@ -82,8 +88,8 @@ module Psych
         index - 1
       end
 
-      def column(offset)
-        offset - @line_offsets[line(offset)]
+      def column(offset, known_line = nil)
+        offset - @line_offsets[known_line || line(offset)]
       end
 
       def point(offset)
@@ -135,12 +141,24 @@ module Psych
         Location.new(@source, @pos_start, @source.trim_comments(@pos_end))
       end
 
-      def to_a
-        [start_line, start_column, end_line, end_column]
+      def event_location
+        fields(@pos_end)
+      end
+
+      def trimmed_event_location
+        fields(@source.trim(@pos_end))
       end
 
       def self.point(source, pos)
         new(source, pos, pos)
+      end
+
+      private
+
+      def fields(effective_end)
+        sl = @source.line(@pos_start)
+        el = @source.line(effective_end)
+        [sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el)]
       end
     end
 
@@ -941,7 +959,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.event_location)
         handler.alias(@name)
       end
     end
@@ -961,7 +979,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.event_location)
         handler.start_document(@version, @tag_directives.to_a, @implicit)
       end
     end
@@ -978,7 +996,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.event_location)
         handler.end_document(@implicit)
       end
     end
@@ -997,7 +1015,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.event_location)
         handler.start_mapping(@anchor, @tag, @style == Nodes::Mapping::BLOCK, @style)
       end
     end
@@ -1011,7 +1029,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.trim)
+        handler.event_location(*@location.trimmed_event_location)
         handler.end_mapping
       end
     end
@@ -1032,7 +1050,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.trim)
+        handler.event_location(*@location.trimmed_event_location)
 
         event =
           handler.scalar(
@@ -1063,7 +1081,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.event_location)
         handler.start_sequence(@anchor, @tag, @style == Nodes::Sequence::BLOCK, @style)
       end
     end
@@ -1077,7 +1095,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.trim)
+        handler.event_location(*@location.trimmed_event_location)
         handler.end_sequence
       end
     end
@@ -1092,7 +1110,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.event_location)
         handler.start_stream(Psych::Parser::UTF8)
       end
     end
@@ -1107,7 +1125,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location)
+        handler.event_location(*@location.event_location)
         handler.end_stream
       end
     end
@@ -1333,7 +1351,7 @@ module Psych
       # logic.
       def detect_indent(n)
         pos = @scanner.pos
-        in_seq = pos > 0 && (b = @string.getbyte(pos - 1)) && (b == 0x2D || b == 0x3F || b == 0x3A)
+        in_seq = pos > 0 && (byte = @string.getbyte(pos - 1)) && (byte == 0x2D || byte == 0x3F || byte == 0x3A)
 
         match = @scanner.check(%r{((?:\ *(?:\#.*)?\n)*)(\ *)}) or raise InternalException
         pre = @scanner[1]
@@ -1434,9 +1452,8 @@ module Psych
 
       # Push a new temporary list onto the events cache.
       def events_cache_push
-        list = []
-        @events_cache << list
-        @events_cache_top = list
+        @events_cache << []
+        @events_cache_top = @events_cache.last
       end
 
       # Pop a temporary list from the events cache.
@@ -1446,10 +1463,22 @@ module Psych
         result
       end
 
+      # Pop and discard a temporary list.
+      def events_cache_discard
+        @events_cache.pop or raise InternalException
+        @events_cache_top = @events_cache.last
+      end
+
       # Pop a temporary list from the events cache and flush it to the next
       # level down in the cache or directly to the handler.
       def events_cache_flush
-        events_cache_pop.each { |event| events_push(event) }
+        events = events_cache_pop
+
+        if (top = @events_cache_top)
+          top.concat(events)
+        else
+          events.each { |event| events_push(event) }
+        end
       end
 
       # Push an event into the events list. This could be pushing into the most
@@ -2003,6 +2032,9 @@ module Psych
       #   | ( c-ns-anchor-property
       #   ( s-separate(n,c) c-ns-tag-property )? )
       def parse_c_ns_properties(n, c)
+        byte = @string.getbyte(@scanner.pos)
+        return unless byte == 0x21 || byte == 0x26 # '!' or '&'
+
         try do
           if parse_c_ns_tag_property
             try { parse_s_separate(n, c) && parse_c_ns_anchor_property }
@@ -2185,6 +2217,13 @@ module Psych
 
       private_constant :C_DOUBLE_QUOTED_UNESCAPES
 
+      C_DOUBLE_QUOTED_ESCAPE_END1 = /\A\\\r?\n[ \t]*\z/
+      C_DOUBLE_QUOTED_ESCAPE_END2 = /\A(?:[ \t]*\r?\n[ \t]*)+\z/
+      C_DOUBLE_QUOTED_ESCAPE_END2_SUB = /[ \t]*\r?\n[ \t]*/
+      C_DOUBLE_QUOTED_GSUB = %r{(?:\r\n|\\\r?\n[ \t]*|(?:[ \t]*\r?\n[ \t]*)+|\\x([0-9a-fA-F]{2})|\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})|\\[\\ "/_0abefnrt\tvLNP])}
+
+      private_constant :C_DOUBLE_QUOTED_ESCAPE_END1, :C_DOUBLE_QUOTED_ESCAPE_END2, :C_DOUBLE_QUOTED_ESCAPE_END2_SUB, :C_DOUBLE_QUOTED_GSUB
+
       # [109]
       # c-double-quoted(n,c) ::=
       #   '"' nb-double-text(n,c)
@@ -2194,22 +2233,14 @@ module Psych
 
         @context.within_double_quoted_scalar(@scanner.pos) do
           if try { match("\"") && parse_nb_double_text(n, c) && match("\"") }
-            end1 = "(?:\\\\\\r?\\n[ \\t]*)"
-            end2 = "(?:[ \\t]*\\r?\\n[ \\t]*)"
-            hex = "[0-9a-fA-F]"
-            hex2 = "(?:\\\\x(#{hex}{2}))"
-            hex4 = "(?:\\\\u(#{hex}{4}))"
-            hex8 = "(?:\\\\U(#{hex}{8}))"
-
             value = from(pos_start).byteslice(1...-1)
-            value.gsub!(%r{(?:\r\n|#{end1}|#{end2}+|#{hex2}|#{hex4}|#{hex8}|\\[\\ "/_0abefnrt\tvLNP])}) do |m|
-              case m
-              when /\A(?:#{hex2}|#{hex4}|#{hex8})\z/o
-                m[2..].to_i(16).chr(Encoding::UTF_8)
-              when /\A#{end1}\z/o
+            value.gsub!(C_DOUBLE_QUOTED_GSUB) do |m|
+              if $1 || $2 || $3
+                ($1 || $2 || $3).to_i(16).chr(Encoding::UTF_8)
+              elsif m.match?(C_DOUBLE_QUOTED_ESCAPE_END1)
                 ""
-              when /\A#{end2}+\z/o
-                m.sub(/#{end2}/, "").gsub(/#{end2}/, "\n").then { |r| r.empty? ? " " : r }
+              elsif m.match?(C_DOUBLE_QUOTED_ESCAPE_END2)
+                m.sub(C_DOUBLE_QUOTED_ESCAPE_END2_SUB, "").gsub(C_DOUBLE_QUOTED_ESCAPE_END2_SUB, "\n").then { |r| r.empty? ? " " : r }
               else
                 C_DOUBLE_QUOTED_UNESCAPES.fetch(m, m)
               end
@@ -2240,6 +2271,7 @@ module Psych
       # Bulk regex: matches runs of valid double-quoted chars (including escape
       # sequences) but not unescaped \ or " or line breaks.
       NB_DOUBLE_ONE_LINE = /(?:[^\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/.freeze
+      private_constant :NB_DOUBLE_ONE_LINE
 
       # [111]
       # nb-double-one-line ::=
@@ -2274,6 +2306,7 @@ module Psych
       # Bulk regex: matches whitespace-separated non-whitespace double-quoted
       # chars (including escape sequences).
       NB_NS_DOUBLE_IN_LINE = /(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/.freeze
+      private_constant :NB_NS_DOUBLE_IN_LINE
 
       # [114]
       # nb-ns-double-in-line ::=
@@ -2394,6 +2427,7 @@ module Psych
       # Bulk regex: matches runs of valid single-quoted chars. Single quotes
       # are escaped as '' (two consecutive quotes).
       NB_SINGLE_ONE_LINE = /(?:[^'\n\r]|'')*/.freeze
+      private_constant :NB_SINGLE_ONE_LINE
 
       # [122]
       # nb-single-one-line ::=
@@ -2406,6 +2440,7 @@ module Psych
       # Bulk regex: matches whitespace-separated non-whitespace single-quoted
       # chars (including escaped quotes '').
       NB_NS_SINGLE_IN_LINE = /(?:[ \t]*(?:[^ \t'\n\r]|''))*/.freeze
+      private_constant :NB_NS_SINGLE_IN_LINE
 
       # [123]
       # nb-ns-single-in-line ::=
@@ -2449,6 +2484,7 @@ module Psych
       # c-indicators; second alternative matches ?:- followed by ns-plain-safe.
       NS_PLAIN_FIRST_OUT = /[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF])/.freeze
       NS_PLAIN_FIRST_IN  = /[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF])/.freeze
+      private_constant :NS_PLAIN_FIRST_OUT, :NS_PLAIN_FIRST_IN
 
       # [126]
       # ns-plain-first(c) ::=
@@ -2543,6 +2579,7 @@ module Psych
       # permits :followed-by-non-space and non-space-preceding-#.
       NB_NS_PLAIN_IN_LINE_OUT = /(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])#))*/.freeze
       NB_NS_PLAIN_IN_LINE_IN  = /(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/.freeze
+      private_constant :NB_NS_PLAIN_IN_LINE_OUT, :NB_NS_PLAIN_IN_LINE_IN
 
       # [132]
       # nb-ns-plain-in-line(c) ::=
@@ -2761,7 +2798,7 @@ module Psych
           events_cache_flush
           true
         else
-          events_cache_pop
+          events_cache_discard
           false
         end
       end
@@ -2834,7 +2871,7 @@ module Psych
           events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
           true
         else
-          events_cache_pop
+          events_cache_discard
           false
         end
       end
@@ -2926,9 +2963,13 @@ module Psych
         if result
           source = from(pos_start)
 
-          value = source.dup
-          value.gsub!(/(?:[\ \t]*\r?\n[\ \t]*)/, "\n")
-          value.gsub!(/\n(\n*)/) { $1.empty? ? " " : $1 }
+          if source.include?("\n")
+            value = source.dup
+            value.gsub!(/(?:[\ \t]*\r?\n[\ \t]*)/, "\n")
+            value.gsub!(/\n(\n*)/) { $1.empty? ? " " : $1 }
+          else
+            value = source
+          end
 
           events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), source, value, Nodes::Scalar::PLAIN))
         end
@@ -3174,7 +3215,7 @@ module Psych
           true
         else
           @in_scalar = false
-          events_cache_pop
+          events_cache_discard
           false
         end
       end
@@ -3273,7 +3314,7 @@ module Psych
           true
         else
           @in_scalar = false
-          events_cache_pop
+          events_cache_discard
           false
         end
       end
@@ -3436,6 +3477,8 @@ module Psych
       #   c-l-block-seq-entry(n)
       #   ( s-indent(n) c-l-block-seq-entry(n) )*
       def parse_ns_l_compact_sequence(n)
+        return false unless @string.getbyte(@scanner.pos) == 0x2D # '-'
+
         events_cache_push
         events_push_flush_properties(SequenceStart.new(Location.point(@source, @scanner.pos), Nodes::Sequence::BLOCK))
 
@@ -3447,7 +3490,7 @@ module Psych
           events_push_flush_properties(SequenceEnd.new(Location.point(@source, @scanner.pos)))
           true
         else
-          events_cache_pop
+          events_cache_discard
           false
         end
       end
@@ -3469,7 +3512,7 @@ module Psych
             events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
             true
           else
-            events_cache_pop
+            events_cache_discard
             false
           end
         end
@@ -3480,7 +3523,7 @@ module Psych
       #   c-l-block-map-explicit-entry(n)
       #   | ns-l-block-map-implicit-entry(n)
       def parse_ns_l_block_map_entry(n)
-        parse_c_l_block_map_explicit_entry(n) ||
+        (@string.getbyte(@scanner.pos) == 0x3F && parse_c_l_block_map_explicit_entry(n)) || # '?'
           parse_ns_l_block_map_implicit_entry(n)
       end
 
@@ -3499,7 +3542,7 @@ module Psych
           events_cache_flush
           true
         else
-          events_cache_pop
+          events_cache_discard
           false
         end
       end
@@ -3544,7 +3587,7 @@ module Psych
           events_cache_flush
           true
         else
-          events_cache_pop
+          events_cache_discard
           false
         end
       end
@@ -3586,7 +3629,7 @@ module Psych
           events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
           true
         else
-          events_cache_pop
+          events_cache_discard
           false
         end
       end
