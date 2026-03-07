@@ -1370,7 +1370,7 @@ module Psych
       # logic.
       def detect_indent(n)
         pos = @scanner.pos
-        in_seq = pos > 0 && (byte = @string.getbyte(pos - 1)) && (byte == 0x2D || byte == 0x3F || byte == 0x3A)
+        in_seq = pos > 0 && case @string.getbyte(pos - 1); when 0x2D, 0x3F, 0x3A then true; end # - ? :
 
         match = @scanner.check(%r{((?:\ *(?:\#.*)?\n)*)(\ *)}) or raise InternalException
         pre = @scanner[1]
@@ -2005,8 +2005,7 @@ module Psych
       #   | ( c-ns-anchor-property
       #   ( s-separate(n,c) c-ns-tag-property )? )
       def parse_c_ns_properties(n, c)
-        byte = @string.getbyte(@scanner.pos)
-        return unless byte == 0x21 || byte == 0x26 # '!' or '&'
+        return unless case @string.getbyte(@scanner.pos); when 0x21, 0x26 then true; end # ! &
 
         try do
           if parse_c_ns_tag_property
@@ -2493,6 +2492,10 @@ module Psych
         end
       end
 
+      # A full plain scalar in flow-in context: ns-plain-first(flow-in) + nb-ns-plain-in-line(flow-in)
+      FLOW_PLAIN_SCALAR = /(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/.freeze
+      private_constant :FLOW_PLAIN_SCALAR
+
       # [137]
       # c-flow-sequence(n,c) ::=
       #   '[' s-separate(n,c)?
@@ -2504,7 +2507,7 @@ module Psych
               events_push_flush_properties(SequenceStart.new(Location.new(@source, @scanner.pos - 1, @scanner.pos), Nodes::Sequence::FLOW))
 
               parse_s_separate(n, c)
-              parse_ns_s_flow_seq_entries(n, parse_in_flow(c))
+              parse_fast_flow_seq_entries || parse_ns_s_flow_seq_entries(n, parse_in_flow(c))
 
               if match("]")
                 events_push_flush_properties(SequenceEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
@@ -2513,6 +2516,90 @@ module Psych
             end
           end
         end
+      end
+
+      # Fast path for flow sequence entries: handles [plain1, plain2, ...]
+      # without going through the full recursive descent. Only handles
+      # single-line sequences of plain scalars (no flow pairs, no nested
+      # collections, no anchors/tags, no multi-line content).
+      def parse_fast_flow_seq_entries
+        return false if @anchor || @tag
+
+        pos = @scanner.pos
+
+        # Quick check: first char must be a possible plain scalar start
+        case @string.getbyte(pos)
+        when 0x5D, 0x5B, 0x7B, 0x27, 0x22, 0x21, 0x26, 0x2A, 0x3F, nil # ] [ { ' " ! & * ?
+          return false
+        end
+
+        # Collect entries first, only emit if the whole fast path succeeds.
+        # Each entry is [value_start, value_end, value].
+        entries = []
+
+        loop do
+          entry_start = @scanner.pos
+          unless @scanner.skip(FLOW_PLAIN_SCALAR)
+            @scanner.pos = pos
+            return false
+          end
+          entry_end = @scanner.pos
+          entry_value = @scanner.matched
+
+          @scanner.skip(S_WHITE_STAR)
+          next_byte = @string.getbyte(@scanner.pos)
+
+          # If followed by ':' + space/flow-indicator/EOL, this is a flow pair — bail
+          if next_byte == 0x3A # :
+            case @string.getbyte(@scanner.pos + 1)
+            when 0x20, 0x09, 0x2C, 0x5D, 0x7D, 0x5B, 0x7B, 0x0A, 0x0D, nil # space tab , ] } [ { \n \r EOF
+              @scanner.pos = pos
+              return false
+            end
+          end
+
+          # If followed by newline, this is multi-line — bail
+          case next_byte
+          when 0x0A, 0x0D
+            @scanner.pos = pos
+            return false
+          end
+
+          entries << entry_start << entry_end << entry_value
+
+          case next_byte
+          when 0x2C # ,
+            @scanner.pos += 1
+            @scanner.skip(S_WHITE_STAR)
+            next_byte2 = @string.getbyte(@scanner.pos)
+            # Trailing comma before ]
+            break if next_byte2 == 0x5D # ]
+            # Bail on newline or non-plain-scalar start
+            case next_byte2
+            when 0x0A, 0x0D, 0x5B, 0x7B, 0x27, 0x22, 0x21, 0x26, 0x2A, 0x3F
+              @scanner.pos = pos
+              return false
+            end
+          else
+            break
+          end
+        end
+
+        # Must end with ] to be a valid fast path
+        unless @string.getbyte(@scanner.pos) == 0x5D # ]
+          @scanner.pos = pos
+          return false
+        end
+
+        # Emit all collected entries
+        idx = 0
+        while idx < entries.size
+          # [value_start, value_end, value]
+          events_push(Scalar.new(Location.new(@source, entries[idx], entries[idx + 1]), entries[idx + 2], entries[idx + 2], Nodes::Scalar::PLAIN))
+          idx += 3
+        end
+
+        true
       end
 
       # [138]
@@ -2543,6 +2630,11 @@ module Psych
         parse_ns_flow_pair(n, c) || parse_ns_flow_node(n, c)
       end
 
+      # Fast-path regex for flow mapping entry: key: value (both plain scalars)
+      # Matches "key: value" where key and value are plain flow-in scalars.
+      FAST_FLOW_MAP_ENTRY = /((?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*):[ \t]+((?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*)/.freeze
+      private_constant :FAST_FLOW_MAP_ENTRY
+
       # [140]
       # c-flow-mapping(n,c) ::=
       #   '{' s-separate(n,c)?
@@ -2554,7 +2646,7 @@ module Psych
               events_push_flush_properties(MappingStart.new(Location.new(@source, @scanner.pos - 1, @scanner.pos), Nodes::Mapping::FLOW))
 
               parse_s_separate(n, c)
-              parse_ns_s_flow_map_entries(n, parse_in_flow(c))
+              parse_fast_flow_map_entries || parse_ns_s_flow_map_entries(n, parse_in_flow(c))
 
               if match("}")
                 events_push_flush_properties(MappingEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
@@ -2563,6 +2655,82 @@ module Psych
             end
           end
         end
+      end
+
+      # Fast path for flow mapping entries: handles {key: val, key: val, ...}
+      # without going through the full recursive descent. Only handles
+      # single-line mappings with plain scalar keys and values.
+      def parse_fast_flow_map_entries
+        return false if @anchor || @tag
+
+        pos = @scanner.pos
+
+        # Quick check: first char must be a possible plain scalar start
+        case @string.getbyte(pos)
+        when 0x7D, 0x5B, 0x7B, 0x27, 0x22, 0x21, 0x26, 0x2A, 0x3F, nil # } [ { ' " ! & * ?
+          return false
+        end
+
+        # Collect entries first, only emit if the whole fast path succeeds.
+        # Each entry is [key_start, key_end, key, value_start, value_end, value].
+        entries = []
+
+        loop do
+          entry_start = @scanner.pos
+          unless @scanner.skip(FAST_FLOW_MAP_ENTRY)
+            @scanner.pos = pos
+            return false
+          end
+          matched_key = @scanner[1]
+          matched_value = @scanner[2]
+          matched_end = @scanner.pos
+
+          @scanner.skip(S_WHITE_STAR)
+          next_byte = @string.getbyte(@scanner.pos)
+
+          # Bail on newline (multi-line flow)
+          case next_byte
+          when 0x0A, 0x0D
+            @scanner.pos = pos
+            return false
+          end
+
+          entries << entry_start << entry_start + matched_key.bytesize << matched_key << matched_end - matched_value.bytesize << matched_end << matched_value
+
+          case next_byte
+          when 0x2C # ,
+            @scanner.pos += 1
+            @scanner.skip(S_WHITE_STAR)
+            next_byte2 = @string.getbyte(@scanner.pos)
+            # Trailing comma before }
+            break if next_byte2 == 0x7D # }
+            # Bail on newline or non-plain-scalar start
+            case next_byte2
+            when 0x0A, 0x0D, 0x5B, 0x7B, 0x27, 0x22, 0x21, 0x26, 0x2A, 0x3F
+              @scanner.pos = pos
+              return false
+            end
+          else
+            break
+          end
+        end
+
+        # Must end with } to be a valid fast path
+        unless @string.getbyte(@scanner.pos) == 0x7D # }
+          @scanner.pos = pos
+          return false
+        end
+
+        # Emit all collected entries
+        idx = 0
+        while idx < entries.size
+          # [key_start, key_end, key, value_start, value_end, value]
+          events_push(Scalar.new(Location.new(@source, entries[idx], entries[idx + 1]), entries[idx + 2], entries[idx + 2], Nodes::Scalar::PLAIN))
+          events_push(Scalar.new(Location.new(@source, entries[idx + 3], entries[idx + 4]), entries[idx + 5], entries[idx + 5], Nodes::Scalar::PLAIN))
+          idx += 6
+        end
+
+        true
       end
 
       # [141]
@@ -2830,15 +2998,12 @@ module Psych
         result
       end
 
-      JSON_CONTENT_STARTERS = { 0x5B => true, 0x7B => true, 0x27 => true, 0x22 => true }.freeze # [ { ' "
-      private_constant :JSON_CONTENT_STARTERS
-
       # [157]
       # c-flow-json-content(n,c) ::=
       #   c-flow-sequence(n,c) | c-flow-mapping(n,c)
       #   | c-single-quoted(n,c) | c-double-quoted(n,c)
       def parse_c_flow_json_content(n, c)
-        return unless JSON_CONTENT_STARTERS[@string.getbyte(@scanner.pos)]
+        return unless case @string.getbyte(@scanner.pos); when 0x5B, 0x7B, 0x27, 0x22 then true; end # [ { ' "
 
         parse_c_flow_sequence(n, c) ||
           parse_c_flow_mapping(n, c) ||
