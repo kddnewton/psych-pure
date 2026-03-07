@@ -1282,7 +1282,7 @@ module Psych
         # This functions as a list of temporary lists of events that may be
         # flushed into the handler if current context is matched.
         @events_cache = []
-        @events_cache_top = nil
+        @events_cache_marks = []
 
         # These events are used to track the start and end of a document. They
         # are flushed into the main events list when a new document is started.
@@ -1469,43 +1469,51 @@ module Psych
         end
       end
 
-      # Push a new temporary list onto the events cache.
+      # Push a marker onto the events cache. Events added after this point
+      # can be discarded or flushed as a group.
       def events_cache_push
-        @events_cache << []
-        @events_cache_top = @events_cache.last
+        @events_cache_marks << @events_cache.size
       end
 
-      # Pop a temporary list from the events cache.
+      # Pop events added since the last marker and return them as an array.
       def events_cache_pop
-        result = @events_cache.pop or raise InternalException
-        @events_cache_top = @events_cache.last
-        result
+        mark = @events_cache_marks.pop or raise InternalException
+        @events_cache.slice!(mark..)
       end
 
-      # Pop and discard a temporary list.
+      # Discard events added since the last marker.
       def events_cache_discard
-        @events_cache.pop or raise InternalException
-        @events_cache_top = @events_cache.last
+        mark = @events_cache_marks.pop or raise InternalException
+        @events_cache.slice!(mark..)
+        nil
       end
 
-      # Pop a temporary list from the events cache and flush it to the next
-      # level down in the cache or directly to the handler.
+      # Flush events from the current marker level. If there's a parent
+      # marker, the events are already in the flat array — just remove
+      # the marker. If this is the top level, emit all events to the handler.
       def events_cache_flush
-        events = events_cache_pop
+        mark = @events_cache_marks.pop or raise InternalException
 
-        if (top = @events_cache_top)
-          top.concat(events)
-        else
-          events.each { |event| events_push(event) }
+        if @events_cache_marks.empty?
+          # Top level: emit events to handler and clear
+          idx = mark
+          cache = @events_cache
+          while idx < cache.size
+            events_push(cache[idx])
+            idx += 1
+          end
+          cache.slice!(mark..)
         end
+        # If not top level, events stay in the flat array — they belong
+        # to the parent scope now. Nothing to do.
       end
 
       # Push an event into the events list. This could be pushing into the most
       # recent temporary list if there is one, or flushed directly to the
       # handler.
       def events_push(event)
-        if (top = @events_cache_top)
-          top << event
+        if !@events_cache_marks.empty?
+          @events_cache << event
         else
           if @document_start_event
             case event
@@ -3075,7 +3083,7 @@ module Psych
       #   l-empty(n,block-in)*
       #   s-indent(n) nb-char+
       def parse_l_nb_literal_text(n)
-        events_cache_size = @events_cache_top.size
+        events_cache_size = @events_cache.size
 
         try do
           if star { parse_l_empty(n, :block_in) } && parse_s_indent(n)
@@ -3089,7 +3097,7 @@ module Psych
             # When parsing all of the l_empty calls, we may have added a bunch
             # of empty lines to the events cache. We need to clear those out
             # here.
-            @events_cache_top.slice!(events_cache_size..-1)
+            @events_cache.slice!(events_cache_size..)
             false
           end
         end
