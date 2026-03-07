@@ -89,9 +89,9 @@ module Psych
         # The parser generally moves forward through the input, so this
         # avoids the O(log n) bsearch in the common case.
         cached = @last_line_index
+        offsets = @line_offsets
 
         if offset >= @last_line_offset
-          offsets = @line_offsets
           max = offsets.size - 1
           while cached < max && offsets[cached + 1] <= offset
             cached += 1
@@ -101,8 +101,14 @@ module Psych
           @last_line_offset = offsets[cached]
           cached
         else
-          # Backward seek — fall back to bsearch
-          (@line_offsets.bsearch_index { |line_offset| line_offset > offset } || @line_offsets.size) - 1
+          # Backward seek — linear scan backward from cached position
+          while cached > 0 && offsets[cached] > offset
+            cached -= 1
+          end
+
+          @last_line_index = cached
+          @last_line_offset = offsets[cached]
+          cached
         end
       end
 
