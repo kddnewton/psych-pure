@@ -45,6 +45,9 @@ module Psych
         @line_offsets = [0]
         @trimmable_lines = []
 
+        @last_line_index = 0
+        @last_line_offset = 0
+
         pos = 0
         while (newline_idx = string.index("\n", pos))
           non_space_idx = string.index(NON_SPACE, pos)
@@ -83,9 +86,25 @@ module Psych
       end
 
       def line(offset)
-        index = @line_offsets.bsearch_index { |line_offset| line_offset > offset }
-        return @line_offsets.size - 1 if index.nil?
-        index - 1
+        # Fast path: linear scan forward from the last lookup position.
+        # The parser generally moves forward through the input, so this
+        # avoids the O(log n) bsearch in the common case.
+        cached = @last_line_index
+
+        if offset >= @last_line_offset
+          offsets = @line_offsets
+          max = offsets.size - 1
+          while cached < max && offsets[cached + 1] <= offset
+            cached += 1
+          end
+
+          @last_line_index = cached
+          @last_line_offset = offsets[cached]
+          cached
+        else
+          # Backward seek — fall back to bsearch
+          (@line_offsets.bsearch_index { |line_offset| line_offset > offset } || @line_offsets.size) - 1
+        end
       end
 
       def column(offset, known_line = nil)
@@ -141,24 +160,24 @@ module Psych
         Location.new(@source, @pos_start, @source.trim_comments(@pos_end))
       end
 
-      def event_location
-        fields(@pos_end)
+      # Emit an event for this location to the given handler.
+      def event_location(handler)
+        sl = @source.line(@pos_start)
+        el = @source.line(@pos_end)
+        handler.event_location(sl, @source.column(@pos_start, sl), el, @source.column(@pos_end, el))
       end
 
-      def trimmed_event_location
-        fields(@source.trim(@pos_end))
+      # Emit an event for this location to the given handler, but trim trailing
+      # whitespace and comments first.
+      def trimmed_event_location(handler)
+        effective_end = @source.trim(@pos_end)
+        sl = @source.line(@pos_start)
+        el = @source.line(effective_end)
+        handler.event_location(sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el))
       end
 
       def self.point(source, pos)
         new(source, pos, pos)
-      end
-
-      private
-
-      def fields(effective_end)
-        sl = @source.line(@pos_start)
-        el = @source.line(effective_end)
-        [sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el)]
       end
     end
 
@@ -959,7 +978,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.event_location)
+        @location.event_location(handler)
         handler.alias(@name)
       end
     end
@@ -979,7 +998,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.event_location)
+        @location.event_location(handler)
         handler.start_document(@version, @tag_directives.to_a, @implicit)
       end
     end
@@ -996,7 +1015,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.event_location)
+        @location.event_location(handler)
         handler.end_document(@implicit)
       end
     end
@@ -1015,7 +1034,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.event_location)
+        @location.event_location(handler)
         handler.start_mapping(@anchor, @tag, @style == Nodes::Mapping::BLOCK, @style)
       end
     end
@@ -1029,7 +1048,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.trimmed_event_location)
+        @location.trimmed_event_location(handler)
         handler.end_mapping
       end
     end
@@ -1050,7 +1069,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.trimmed_event_location)
+        @location.trimmed_event_location(handler)
 
         event =
           handler.scalar(
@@ -1081,7 +1100,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.event_location)
+        @location.event_location(handler)
         handler.start_sequence(@anchor, @tag, @style == Nodes::Sequence::BLOCK, @style)
       end
     end
@@ -1095,7 +1114,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.trimmed_event_location)
+        @location.trimmed_event_location(handler)
         handler.end_sequence
       end
     end
@@ -1110,7 +1129,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.event_location)
+        @location.event_location(handler)
         handler.start_stream(Psych::Parser::UTF8)
       end
     end
@@ -1125,7 +1144,7 @@ module Psych
       end
 
       def accept(handler)
-        handler.event_location(*@location.event_location)
+        @location.event_location(handler)
         handler.end_stream
       end
     end
