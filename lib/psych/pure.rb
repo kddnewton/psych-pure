@@ -44,7 +44,6 @@ module Psych
       def initialize(string)
         @line_offsets = [0]
         @trimmable_lines = []
-
         @last_line_index = 0
         @last_line_offset = 0
 
@@ -114,6 +113,7 @@ module Psych
       def point(offset)
         "line #{line(offset) + 1} column #{column(offset)}"
       end
+
     end
 
     # A location represents a range of bytes in the input string.
@@ -1484,7 +1484,9 @@ module Psych
       # Discard events added since the last marker.
       def events_cache_discard
         mark = @events_cache_marks.pop or raise InternalException
-        @events_cache.slice!(mark..)
+        # Truncate to the mark position without allocating a new array.
+        # In the common case (mark == size), this is a no-op.
+        @events_cache.slice!(mark..) if @events_cache.size > mark
         nil
       end
 
@@ -1496,13 +1498,15 @@ module Psych
 
         if @events_cache_marks.empty?
           # Top level: emit events to handler and clear
-          idx = mark
           cache = @events_cache
-          while idx < cache.size
+          idx = mark
+          len = cache.size
+          while idx < len
             events_push(cache[idx])
             idx += 1
           end
-          cache.slice!(mark..)
+          cache.clear if mark == 0
+          cache.slice!(mark..) if mark > 0 && len > mark
         end
         # If not top level, events stay in the flat array — they belong
         # to the parent scope now. Nothing to do.
