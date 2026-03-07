@@ -39,8 +39,6 @@ module Psych
     # A source wraps the input string and provides methods to access line and
     # column information from a byte offset.
     class Source
-      NON_SPACE = /[^ ]/.freeze
-
       def initialize(string)
         @line_offsets = [0]
         @trimmable_lines = []
@@ -49,10 +47,12 @@ module Psych
 
         pos = 0
         while (newline_idx = string.index("\n", pos))
-          non_space_idx = string.index(NON_SPACE, pos)
+          # Find first non-space byte on this line using getbyte instead of regex
+          non_space_idx = pos
+          non_space_idx += 1 while non_space_idx < newline_idx && string.getbyte(non_space_idx) == 0x20
 
           @trimmable_lines <<
-            if non_space_idx.nil? || non_space_idx >= newline_idx
+            if non_space_idx >= newline_idx
               :blank
             elsif string.getbyte(non_space_idx) == 0x23 # '#'
               :comment
@@ -3272,7 +3272,7 @@ module Psych
             # When parsing all of the l_empty calls, we may have added a bunch
             # of empty lines to the events cache. We need to clear those out
             # here.
-            @events_cache.slice!(events_cache_size..)
+            @events_cache.slice!(events_cache_size..) if @events_cache.size > events_cache_size
             false
           end
         end
