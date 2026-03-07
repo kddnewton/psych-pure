@@ -1521,42 +1521,19 @@ module Psych
       # :section: Grammar rules
       # ------------------------------------------------------------------------
 
-      # [002]
-      # nb-json ::=
-      #   x:9 | [x:20-x:10FFFF]
-      def parse_nb_json
-        match(/[\u{09}\u{20}-\u{10FFFF}]/)
-      end
+      # [027]
+      # nb-char ::=
+      #   c-printable - b-char - c-byte-order-mark
+      # = [\t\x20-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]
+      NB_CHAR_PLUS = /[\t\x20-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]+/.freeze
+      NB_CHAR_STAR = /[\t\x20-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]*/.freeze
+      private_constant :NB_CHAR_PLUS, :NB_CHAR_STAR
 
       # [023]
       # c-flow-indicator ::=
       #   ',' | '[' | ']' | '{' | '}'
-      def parse_c_flow_indicator
-        match(/[,\[\]{}]/)
-      end
-
-      # [027]
-      # nb-char ::=
-      #   c-printable - b-char - c-byte-order-mark
-      def parse_nb_char
-        pos_start = @scanner.pos
-
-        if match(/[\u{09}\u{0A}\u{0D}\u{20}-\u{7E}\u{85}\u{A0}-\u{D7FF}\u{E000}-\u{FFFD}\u{10000}-\u{10FFFF}]/)
-          pos_end = @scanner.pos
-          @scanner.pos = pos_start
-
-          if match(/[\u{0A}\u{0D}\u{FEFF}]/)
-            @scanner.pos = pos_start
-            false
-          else
-            @scanner.pos = pos_end
-            true
-          end
-        else
-          @scanner.pos = pos_start
-          false
-        end
-      end
+      C_FLOW_INDICATOR = /[,\[\]{}]/.freeze
+      private_constant :C_FLOW_INDICATOR
 
       # [028]
       # b-break ::=
@@ -1589,32 +1566,17 @@ module Psych
         end
       end
 
-      # Effectively star { parse_s_white }
-      def parse_s_white_star
-        match(/[\u{20}\u{09}]*/)
-        true
-      end
+      S_WHITE_STAR = /[ \t]*/.freeze
+      NS_CHAR = /[\x21-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]/.freeze
+      NS_CHAR_PLUS = /[\x21-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]+/.freeze
+      private_constant :S_WHITE_STAR, :NS_CHAR, :NS_CHAR_PLUS
 
       # [034]
       # ns-char ::=
       #   nb-char - s-white
       def parse_ns_char
         pos_start = @scanner.pos
-
-        if begin
-          if parse_nb_char
-            pos_end = @scanner.pos
-            @scanner.pos = pos_start
-
-            if parse_s_white
-              @scanner.pos = pos_start
-              false
-            else
-              @scanner.pos = pos_end
-              true
-            end
-          end
-        end then
+        if match(NS_CHAR)
           @text_prefix = from(pos_start) if @in_scalar
           true
         end
@@ -1622,11 +1584,9 @@ module Psych
 
       # [036]
       # ns-hex-digit ::=
-      #   ns-dec-digit
-      #   | [x:41-x:46] | [x:61-x:66]
-      def parse_ns_hex_digit
-        match(/[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}]/)
-      end
+      #   ns-dec-digit | [x:41-x:46] | [x:61-x:66]
+      NS_HEX_DIGIT = /[0-9a-fA-F]/.freeze
+      private_constant :NS_HEX_DIGIT
 
       # [039]
       # ns-uri-char ::=
@@ -1634,7 +1594,7 @@ module Psych
       #   | ';' | '/' | '?' | ':' | '@' | '&' | '=' | '+' | '$' | ','
       #   | '_' | '.' | '!' | '~' | '*' | ''' | '(' | ')' | '[' | ']'
       def parse_ns_uri_char
-        try { match("%") && parse_ns_hex_digit && parse_ns_hex_digit } ||
+        try { match("%") && match(NS_HEX_DIGIT) && match(NS_HEX_DIGIT) } ||
           match(/[\u{30}-\u{39}\u{41}-\u{5A}\u{61}-\u{7A}\-#;\/?:@&=+$,_.!~*'\(\)\[\]]/)
       end
 
@@ -1648,7 +1608,7 @@ module Psych
           pos_end = @scanner.pos
           @scanner.pos = pos_start
 
-          if match("!") || parse_c_flow_indicator
+          if match("!") || match(C_FLOW_INDICATOR)
             @scanner.pos = pos_start
             false
           else
@@ -1671,9 +1631,9 @@ module Psych
       #   | ns-esc-8-bit | ns-esc-16-bit | ns-esc-32-bit )
       def parse_c_ns_esc_char
         match(/\\[0abt\u{09}nvfre\u{20}"\/\\N_LP]/) ||
-          try { match("\\x") && parse_ns_hex_digit && parse_ns_hex_digit } ||
-          try { match("\\u") && 4.times.all? { parse_ns_hex_digit } } ||
-          try { match("\\U") && 8.times.all? { parse_ns_hex_digit } }
+          try { match("\\x") && match(NS_HEX_DIGIT) && match(NS_HEX_DIGIT) } ||
+          try { match("\\u") && 4.times.all? { match(NS_HEX_DIGIT) } } ||
+          try { match("\\U") && 8.times.all? { match(NS_HEX_DIGIT) } }
       end
 
       # [063]
@@ -1818,7 +1778,7 @@ module Psych
         return false unless match("#")
 
         pos = @scanner.pos - 1
-        star { parse_nb_char }
+        match(NB_CHAR_STAR)
 
         @comments[pos] ||= Comment.new(Location.new(@source, pos, @scanner.pos), from(pos), inline) if @comments
         true
@@ -1918,23 +1878,9 @@ module Psych
       #   ( s-separate-in-line ns-directive-parameter )*
       def parse_ns_reserved_directive
         try do
-          parse_ns_directive_name &&
-            star { try { parse_s_separate_in_line && parse_ns_directive_parameter } }
+          match(NS_CHAR_PLUS) &&
+            star { try { parse_s_separate_in_line && match(NS_CHAR_PLUS) } }
         end
-      end
-
-      # [084]
-      # ns-directive-name ::=
-      #   ns-char+
-      def parse_ns_directive_name
-        plus { parse_ns_char }
-      end
-
-      # [085]
-      # ns-directive-parameter ::=
-      #   ns-char+
-      def parse_ns_directive_parameter
-        plus { parse_ns_char }
       end
 
       # [086]
@@ -2094,35 +2040,22 @@ module Psych
         end
       end
 
+      NS_ANCHOR_CHAR_PLUS = /[\x21-\x2B\x2D-\x5A\x5C\x5E-\x7A\x7C\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]+/.freeze
+      private_constant :NS_ANCHOR_CHAR_PLUS
+
       # [101]
       # c-ns-anchor-property ::=
       #   '&' ns-anchor-name
-      def parse_c_ns_anchor_property
-        pos_start = @scanner.pos
-
-        if try { match("&") && plus { parse_ns_anchor_char } }
-          @anchor = from(pos_start).byteslice(1..)
-          true
-        end
-      end
-
+      #
       # [102]
       # ns-anchor-char ::=
       #   ns-char - c-flow-indicator
-      def parse_ns_anchor_char
+      def parse_c_ns_anchor_property
         pos_start = @scanner.pos
 
-        if parse_ns_char
-          pos_end = @scanner.pos
-          @scanner.pos = pos_start
-
-          if parse_c_flow_indicator
-            @scanner.pos = pos_start
-            false
-          else
-            @scanner.pos = pos_end
-            true
-          end
+        if try { match("&") && match(NS_ANCHOR_CHAR_PLUS) }
+          @anchor = from(pos_start).byteslice(1..)
+          true
         end
       end
 
@@ -2133,7 +2066,7 @@ module Psych
         return false unless @string.getbyte(@scanner.pos) == 0x2A # '*'
 
         pos_start = @scanner.pos
-        if try { match("*") && plus { parse_ns_anchor_char } }
+        if try { match("*") && match(NS_ANCHOR_CHAR_PLUS) }
           events_push_flush_properties(Alias.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start).byteslice(1..)))
           true
         end
@@ -2152,46 +2085,11 @@ module Psych
       #   e-scalar
       alias parse_e_node parse_e_scalar
 
-      # [107]
-      # nb-double-char ::=
-      #   c-ns-esc-char | ( nb-json - '\' - '"' )
-      def parse_nb_double_char
-        return true if parse_c_ns_esc_char
-        pos_start = @scanner.pos
-
-        if parse_nb_json
-          pos_end = @scanner.pos
-          @scanner.pos = pos_start
-
-          if match(/[\\"]/)
-            @scanner.pos = pos_start
-            false
-          else
-            @scanner.pos = pos_end
-            true
-          end
-        end
-      end
-
       # [108]
       # ns-double-char ::=
       #   nb-double-char - s-white
-      def parse_ns_double_char
-        pos_start = @scanner.pos
-
-        if parse_nb_double_char
-          pos_end = @scanner.pos
-          @scanner.pos = pos_start
-
-          if parse_s_white
-            @scanner.pos = pos_start
-            false
-          else
-            @scanner.pos = pos_end
-            true
-          end
-        end
-      end
+      NS_DOUBLE_CHAR = /\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}|[\x21\x23-\x5B\x5D-\u{10FFFF}]/.freeze
+      private_constant :NS_DOUBLE_CHAR
 
       # The following unescape sequences are supported in double quoted scalars.
       C_DOUBLE_QUOTED_UNESCAPES = {
@@ -2253,6 +2151,11 @@ module Psych
         end
       end
 
+      # Bulk regex: matches runs of valid double-quoted chars (including escape
+      # sequences) but not unescaped \ or " or line breaks.
+      NB_DOUBLE_ONE_LINE = /(?:[^\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/.freeze
+      private_constant :NB_DOUBLE_ONE_LINE
+
       # [110]
       # nb-double-text(n,c) ::=
       #   ( c = flow-out => nb-double-multi-line(n) )
@@ -2261,25 +2164,14 @@ module Psych
       #   ( c = flow-key => nb-double-one-line )
       def parse_nb_double_text(n, c)
         case c
-        when :block_key then parse_nb_double_one_line
-        when :flow_in then parse_nb_double_multi_line(n)
-        when :flow_key then parse_nb_double_one_line
-        when :flow_out then parse_nb_double_multi_line(n)
-        else raise InternalException, c.inspect
+        when :block_key, :flow_key
+          match(NB_DOUBLE_ONE_LINE)
+          true
+        when :flow_in, :flow_out
+          parse_nb_double_multi_line(n)
+        else
+          raise InternalException, c.inspect
         end
-      end
-
-      # Bulk regex: matches runs of valid double-quoted chars (including escape
-      # sequences) but not unescaped \ or " or line breaks.
-      NB_DOUBLE_ONE_LINE = /(?:[^\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/.freeze
-      private_constant :NB_DOUBLE_ONE_LINE
-
-      # [111]
-      # nb-double-one-line ::=
-      #   nb-double-char*
-      def parse_nb_double_one_line
-        match(NB_DOUBLE_ONE_LINE)
-        true
       end
 
       # [112]
@@ -2289,7 +2181,7 @@ module Psych
       #   l-empty(n,flow-in)* s-flow-line-prefix(n)
       def parse_s_double_escaped(n)
         try do
-          parse_s_white_star &&
+          (match(S_WHITE_STAR) || true) &&
             match("\\") &&
             parse_b_non_content &&
             star { parse_l_empty(n, :flow_in) } &&
@@ -2312,11 +2204,7 @@ module Psych
       # [114]
       # nb-ns-double-in-line ::=
       #   ( s-white* ns-double-char )*
-      def parse_nb_ns_double_in_line
-        match(NB_NS_DOUBLE_IN_LINE)
-        true
-      end
-
+      #
       # [115]
       # s-double-next-line(n) ::=
       #   s-double-break(n)
@@ -2326,9 +2214,9 @@ module Psych
         try do
           if parse_s_double_break(n)
             try do
-              parse_ns_double_char &&
-                parse_nb_ns_double_in_line &&
-                (parse_s_double_next_line(n) || parse_s_white_star)
+              match(NS_DOUBLE_CHAR) &&
+                (match(NB_NS_DOUBLE_IN_LINE) || true) &&
+                (parse_s_double_next_line(n) || (match(S_WHITE_STAR) || true))
             end
 
             true
@@ -2342,8 +2230,8 @@ module Psych
       #   ( s-double-next-line(n) | s-white* )
       def parse_nb_double_multi_line(n)
         try do
-          parse_nb_ns_double_in_line &&
-            (parse_s_double_next_line(n) || parse_s_white_star)
+          (match(NB_NS_DOUBLE_IN_LINE) || true) &&
+            (parse_s_double_next_line(n) || (match(S_WHITE_STAR) || true))
         end
       end
 
@@ -2354,43 +2242,12 @@ module Psych
       # [118]
       # nb-single-char ::=
       #   c-quoted-quote | ( nb-json - ''' )
-      def parse_nb_single_char
-        return true if match("''")
-        pos_start = @scanner.pos
-
-        if parse_nb_json
-          pos_end = @scanner.pos
-          @scanner.pos = pos_start
-
-          if match("'")
-            @scanner.pos = pos_start
-            false
-          else
-            @scanner.pos = pos_end
-            true
-          end
-        end
-      end
-
+      #
       # [119]
       # ns-single-char ::=
       #   nb-single-char - s-white
-      def parse_ns_single_char
-        pos_start = @scanner.pos
-
-        if parse_nb_single_char
-          pos_end = @scanner.pos
-          @scanner.pos = pos_start
-
-          if parse_s_white
-            @scanner.pos = pos_start
-            false
-          else
-            @scanner.pos = pos_end
-            true
-          end
-        end
-      end
+      NS_SINGLE_CHAR = /''|[\x21-\x26\x28-\u{10FFFF}]/.freeze
+      private_constant :NS_SINGLE_CHAR
 
       # [120]
       # c-single-quoted(n,c) ::=
@@ -2409,6 +2266,15 @@ module Psych
         end
       end
 
+      # Bulk regex: matches runs of valid single-quoted chars. Single quotes
+      # are escaped as '' (two consecutive quotes).
+      NB_SINGLE_ONE_LINE = /(?:[^'\n\r]|'')*/.freeze
+
+      # Bulk regex: matches whitespace-separated non-whitespace single-quoted
+      # chars (including escaped quotes '').
+      NB_NS_SINGLE_IN_LINE = /(?:[ \t]*(?:[^ \t'\n\r]|''))*/.freeze
+      private_constant :NB_SINGLE_ONE_LINE, :NB_NS_SINGLE_IN_LINE
+
       # [121]
       # nb-single-text(n,c) ::=
       #   ( c = flow-out => nb-single-multi-line(n) )
@@ -2417,38 +2283,14 @@ module Psych
       #   ( c = flow-key => nb-single-one-line )
       def parse_nb_single_text(n, c)
         case c
-        when :block_key then parse_nb_single_one_line
-        when :flow_in then parse_nb_single_multi_line(n)
-        when :flow_key then parse_nb_single_one_line
-        when :flow_out then parse_nb_single_multi_line(n)
-        else raise InternalException, c.inspect
+        when :block_key, :flow_key
+          match(NB_SINGLE_ONE_LINE)
+          true
+        when :flow_in, :flow_out
+          parse_nb_single_multi_line(n)
+        else
+          raise InternalException, c.inspect
         end
-      end
-
-      # Bulk regex: matches runs of valid single-quoted chars. Single quotes
-      # are escaped as '' (two consecutive quotes).
-      NB_SINGLE_ONE_LINE = /(?:[^'\n\r]|'')*/.freeze
-      private_constant :NB_SINGLE_ONE_LINE
-
-      # [122]
-      # nb-single-one-line ::=
-      #   nb-single-char*
-      def parse_nb_single_one_line
-        match(NB_SINGLE_ONE_LINE)
-        true
-      end
-
-      # Bulk regex: matches whitespace-separated non-whitespace single-quoted
-      # chars (including escaped quotes '').
-      NB_NS_SINGLE_IN_LINE = /(?:[ \t]*(?:[^ \t'\n\r]|''))*/.freeze
-      private_constant :NB_NS_SINGLE_IN_LINE
-
-      # [123]
-      # nb-ns-single-in-line ::=
-      #   ( s-white* ns-single-char )*
-      def parse_nb_ns_single_in_line
-        match(NB_NS_SINGLE_IN_LINE)
-        true
       end
 
       # [124]
@@ -2460,9 +2302,9 @@ module Psych
         try do
           if parse_s_flow_folded(n)
             try do
-              parse_ns_single_char &&
-                parse_nb_ns_single_in_line &&
-                (parse_s_single_next_line(n) || parse_s_white_star)
+              match(NS_SINGLE_CHAR) &&
+                (match(NB_NS_SINGLE_IN_LINE) || true) &&
+                (parse_s_single_next_line(n) || (match(S_WHITE_STAR) || true))
             end
 
             true
@@ -2476,8 +2318,8 @@ module Psych
       #   ( s-single-next-line(n) | s-white* )
       def parse_nb_single_multi_line(n)
         try do
-          parse_nb_ns_single_in_line &&
-            (parse_s_single_next_line(n) || parse_s_white_star)
+          (match(NB_NS_SINGLE_IN_LINE) || true) &&
+            (parse_s_single_next_line(n) || (match(S_WHITE_STAR) || true))
         end
       end
 
@@ -2507,38 +2349,21 @@ module Psych
       #   ( c = flow-key => ns-plain-safe-in )
       def parse_ns_plain_safe(c)
         case c
-        when :block_key then parse_ns_plain_safe_out
-        when :flow_in then parse_ns_plain_safe_in
-        when :flow_key then parse_ns_plain_safe_in
-        when :flow_out then parse_ns_plain_safe_out
-        else raise InternalException, c.inspect
+        when :block_key, :flow_out
+          parse_ns_char
+        when :flow_in, :flow_key
+          match(NS_PLAIN_SAFE_IN)
+        else
+          raise InternalException, c.inspect
         end
       end
-
-      # [128]
-      # ns-plain-safe-out ::=
-      #   ns-char
-      alias parse_ns_plain_safe_out parse_ns_char
 
       # [129]
       # ns-plain-safe-in ::=
       #   ns-char - c-flow-indicator
-      def parse_ns_plain_safe_in
-        pos_start = @scanner.pos
-
-        if parse_ns_char
-          pos_end = @scanner.pos
-          @scanner.pos = pos_start
-
-          if parse_c_flow_indicator
-            @scanner.pos = pos_start
-            false
-          else
-            @scanner.pos = pos_end
-            true
-          end
-        end
-      end
+      # Same character class as NS_ANCHOR_CHAR
+      NS_PLAIN_SAFE_IN = /[\x21-\x2B\x2D-\x5A\x5C\x5E-\x7A\x7C\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]/.freeze
+      private_constant :NS_PLAIN_SAFE_IN
 
       # [130]
       # ns-plain-char(c) ::=
@@ -3237,7 +3062,7 @@ module Psych
           if star { parse_l_empty(n, :block_in) } && parse_s_indent(n)
             pos_start = @scanner.pos
 
-            if plus { parse_nb_char }
+            if match(NB_CHAR_PLUS)
               events_push(from(pos_start))
               true
             end
@@ -3333,11 +3158,9 @@ module Psych
         try do
           if parse_s_indent(n) && parse_ns_char
             pos_start = @scanner.pos
-
-            if star { parse_nb_char }
-              events_push("#{@text_prefix}#{from(pos_start)}")
-              true
-            end
+            match(NB_CHAR_STAR)
+            events_push("#{@text_prefix}#{from(pos_start)}")
+            true
           end
         end
       end
@@ -3361,7 +3184,7 @@ module Psych
         try do
           if parse_s_indent(n) && parse_s_white
             pos_start = @scanner.pos
-            star { parse_nb_char }
+            match(NB_CHAR_STAR)
             events_push("#{@text_prefix}#{from(pos_start)}")
             true
           end
