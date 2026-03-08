@@ -3797,8 +3797,8 @@ module Psych
         events_push_flush_properties(MappingStart.new(Location.point(@source, @scanner.pos), Nodes::Mapping::BLOCK))
 
         if try {
-          parse_ns_l_block_map_entry(n) &&
-          star { try { parse_s_indent(n) && parse_ns_l_block_map_entry(n) } }
+          (parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n)) &&
+          star { try { parse_s_indent(n) && (parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n)) } }
         } then
           events_cache_flush
           events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
