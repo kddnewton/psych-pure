@@ -998,19 +998,22 @@ module Psych
     # A document start event represents the beginning of a new document, of
     # which there can be multiple in a single YAML stream.
     class DocumentStart
-      attr_reader :location, :tag_directives
+      attr_reader :tag_directives
       attr_accessor :version
       attr_writer :implicit
 
-      def initialize(location)
-        @location = location
+      def initialize(source, pos)
+        @source = source
+        @pos = pos
         @version = nil
         @tag_directives = {}
         @implicit = true
       end
 
       def accept(handler)
-        @location.event_location(handler)
+        l = @source.line(@pos)
+        c = @source.column(@pos, l)
+        handler.event_location(l, c, l, c)
         handler.start_document(@version, @tag_directives.to_a, @implicit)
       end
     end
@@ -1018,16 +1021,18 @@ module Psych
     # A document end event represents the end of a document, which may be
     # implicit at the end of the stream or explicit with the ... delimiter.
     class DocumentEnd
-      attr_reader :location
       attr_writer :implicit
 
-      def initialize(location)
-        @location = location
+      def initialize(source, pos)
+        @source = source
+        @pos = pos
         @implicit = true
       end
 
       def accept(handler)
-        @location.event_location(handler)
+        l = @source.line(@pos)
+        c = @source.column(@pos, l)
+        handler.event_location(l, c, l, c)
         handler.end_document(@implicit)
       end
     end
@@ -1035,32 +1040,51 @@ module Psych
     # A mapping start event represents the beginning of a new mapping, which is
     # a set of key-value pairs.
     class MappingStart
-      attr_reader :location, :style
+      attr_reader :style
       attr_accessor :anchor, :tag
 
-      def initialize(location, style)
-        @location = location
+      def initialize(source, pos_start, style, pos_end = pos_start)
+        @source = source
+        @pos_start = pos_start
+        @pos_end = pos_end
         @anchor = nil
         @tag = nil
         @style = style
       end
 
       def accept(handler)
-        @location.event_location(handler)
+        sl = @source.line(@pos_start)
+        sc = @source.column(@pos_start, sl)
+        if @pos_start == @pos_end
+          handler.event_location(sl, sc, sl, sc)
+        else
+          el = @source.line(@pos_end)
+          handler.event_location(sl, sc, el, @source.column(@pos_end, el))
+        end
         handler.start_mapping(@anchor, @tag, @style == Nodes::Mapping::BLOCK, @style)
       end
     end
 
     # A mapping end event represents the end of a mapping.
     class MappingEnd
-      attr_reader :location
-
-      def initialize(location)
-        @location = location
+      def initialize(source, pos_start, pos_end = pos_start)
+        @source = source
+        @pos_start = pos_start
+        @pos_end = pos_end
       end
 
       def accept(handler)
-        @location.trimmed_event_location(handler)
+        effective_end = @source.trim(@pos_end)
+        if @pos_start == effective_end
+          l = @source.line(@pos_start)
+          c = @source.column(@pos_start, l)
+          handler.event_location(l, c, l, c)
+        else
+          sl = @source.line(@pos_start)
+          sc = @source.column(@pos_start, sl)
+          el = @source.line(effective_end)
+          handler.event_location(sl, sc, el, @source.column(effective_end, el))
+        end
         handler.end_mapping
       end
     end
@@ -1122,32 +1146,51 @@ module Psych
     # A sequence start event represents the beginning of a new sequence, which
     # is a list of values.
     class SequenceStart
-      attr_reader :location, :style
+      attr_reader :style
       attr_accessor :anchor, :tag
 
-      def initialize(location, style)
-        @location = location
+      def initialize(source, pos_start, style, pos_end = pos_start)
+        @source = source
+        @pos_start = pos_start
+        @pos_end = pos_end
         @anchor = nil
         @tag = nil
         @style = style
       end
 
       def accept(handler)
-        @location.event_location(handler)
+        sl = @source.line(@pos_start)
+        sc = @source.column(@pos_start, sl)
+        if @pos_start == @pos_end
+          handler.event_location(sl, sc, sl, sc)
+        else
+          el = @source.line(@pos_end)
+          handler.event_location(sl, sc, el, @source.column(@pos_end, el))
+        end
         handler.start_sequence(@anchor, @tag, @style == Nodes::Sequence::BLOCK, @style)
       end
     end
 
     # A sequence end event represents the end of a sequence.
     class SequenceEnd
-      attr_reader :location
-
-      def initialize(location)
-        @location = location
+      def initialize(source, pos_start, pos_end = pos_start)
+        @source = source
+        @pos_start = pos_start
+        @pos_end = pos_end
       end
 
       def accept(handler)
-        @location.trimmed_event_location(handler)
+        effective_end = @source.trim(@pos_end)
+        if @pos_start == effective_end
+          l = @source.line(@pos_start)
+          c = @source.column(@pos_start, l)
+          handler.event_location(l, c, l, c)
+        else
+          sl = @source.line(@pos_start)
+          sc = @source.column(@pos_start, sl)
+          el = @source.line(effective_end)
+          handler.event_location(sl, sc, el, @source.column(effective_end, el))
+        end
         handler.end_sequence
       end
     end
@@ -1155,14 +1198,15 @@ module Psych
     # A stream start event represents the beginning of a new stream. There
     # should only be one of these in a YAML stream.
     class StreamStart
-      attr_reader :location
-
-      def initialize(location)
-        @location = location
+      def initialize(source, pos)
+        @source = source
+        @pos = pos
       end
 
       def accept(handler)
-        @location.event_location(handler)
+        l = @source.line(@pos)
+        c = @source.column(@pos, l)
+        handler.event_location(l, c, l, c)
         handler.start_stream(Psych::Parser::UTF8)
       end
     end
@@ -1170,14 +1214,15 @@ module Psych
     # A stream end event represents the end of a stream. There should only be
     # one of these in a YAML stream.
     class StreamEnd
-      attr_reader :location
-
-      def initialize(location)
-        @location = location
+      def initialize(source, pos)
+        @source = source
+        @pos = pos
       end
 
       def accept(handler)
-        @location.event_location(handler)
+        l = @source.line(@pos)
+        c = @source.column(@pos, l)
+        handler.event_location(l, c, l, c)
         handler.end_stream
       end
     end
@@ -1316,6 +1361,7 @@ module Psych
         # flushed into the handler if current context is matched.
         @events_cache = []
         @events_cache_marks = []
+        @events_cache_depth = 0
 
         # These events are used to track the start and end of a document. They
         # are flushed into the main events list when a new document is started.
@@ -1407,18 +1453,41 @@ module Psych
         pos = @scanner.pos
         in_seq = pos > 0 && case @string.getbyte(pos - 1); when 0x2D, 0x3F, 0x3A then true; end # - ? :
 
-        match = @scanner.check(%r{((?:\ *(?:\#.*)?\n)*)(\ *)}) or raise InternalException
-        pre = @scanner[1]
-        m = @scanner[2].length
+        # Scan past lines that are empty or comment-only to find the
+        # first content line, then measure its leading spaces.
+        idx = pos
+        len = @string.bytesize
+        has_pre = false
 
-        if in_seq && pre.empty?
-          m += 1 if n == -1
-        else
-          m -= n
+        while idx < len
+          # Count leading spaces on this line
+          line_start = idx
+          idx += 1 while idx < len && @string.getbyte(idx) == 0x20
+
+          b = idx < len ? @string.getbyte(idx) : nil
+          if b == 0x0A
+            # Empty line (spaces only) — skip
+            has_pre = true
+            idx += 1
+          elsif b == 0x23
+            # Comment line — skip past newline
+            has_pre = true
+            idx += 1 while idx < len && @string.getbyte(idx) != 0x0A
+            idx += 1 if idx < len
+          else
+            # Content line — measure indent
+            m = idx - line_start
+            if in_seq && !has_pre
+              m += 1 if n == -1
+            else
+              m -= n
+            end
+            return m < 0 ? 0 : m
+          end
         end
 
-        m = 0 if m < 0
-        m
+        # Only empty/comment lines remain
+        0
       end
 
       # This is a convenience method used to retrieve a segment of the string
@@ -1498,7 +1567,7 @@ module Psych
         if @document_end_event
           comments_flush
           @document_end_event.accept(@handler)
-          @document_start_event = DocumentStart.new(Location.point(@source, @scanner.pos))
+          @document_start_event = DocumentStart.new(@source, @scanner.pos)
           @tag_directives = @document_start_event.tag_directives
           @document_end_event = nil
         end
@@ -1508,17 +1577,20 @@ module Psych
       # can be discarded or flushed as a group.
       def events_cache_push
         @events_cache_marks << @events_cache.size
+        @events_cache_depth += 1
       end
 
       # Pop events added since the last marker and return them as an array.
       def events_cache_pop
         mark = @events_cache_marks.pop or raise InternalException
+        @events_cache_depth -= 1
         @events_cache.slice!(mark..)
       end
 
       # Discard events added since the last marker.
       def events_cache_discard
         mark = @events_cache_marks.pop or raise InternalException
+        @events_cache_depth -= 1
         # Truncate to the mark position without allocating a new array.
         # In the common case (mark == size), this is a no-op.
         @events_cache.slice!(mark..) if @events_cache.size > mark
@@ -1530,8 +1602,9 @@ module Psych
       # the marker. If this is the top level, emit all events to the handler.
       def events_cache_flush
         mark = @events_cache_marks.pop or raise InternalException
+        @events_cache_depth -= 1
 
-        if @events_cache_marks.empty?
+        if @events_cache_depth == 0
           # Top level: emit events to handler and clear
           cache = @events_cache
           idx = mark
@@ -1551,7 +1624,7 @@ module Psych
       # recent temporary list if there is one, or flushed directly to the
       # handler.
       def events_push(event)
-        if !@events_cache_marks.empty?
+        if @events_cache_depth > 0
           @events_cache << event
         else
           if @document_start_event
@@ -1559,7 +1632,7 @@ module Psych
             when MappingStart, SequenceStart, Scalar
               @document_start_event.accept(@handler)
               @document_start_event = nil
-              @document_end_event = DocumentEnd.new(Location.point(@source, @scanner.pos))
+              @document_end_event = DocumentEnd.new(@source, @scanner.pos)
             end
           end
 
@@ -2198,7 +2271,8 @@ module Psych
 
         @context.within_double_quoted_scalar(@scanner.pos) do
           if try { match("\"") && parse_nb_double_text(n, c) && match("\"") }
-            value = from(pos_start).byteslice(1...-1)
+            source = from(pos_start)
+            value = source.byteslice(1...-1)
             value.gsub!(C_DOUBLE_QUOTED_GSUB) do |m|
               if $1 || $2 || $3
                 ($1 || $2 || $3).to_i(16).chr(Encoding::UTF_8)
@@ -2211,7 +2285,7 @@ module Psych
               end
             end
 
-            events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start), value, Nodes::Scalar::DOUBLE_QUOTED))
+            events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), source, value, Nodes::Scalar::DOUBLE_QUOTED))
             true
           end
         end
@@ -2323,11 +2397,11 @@ module Psych
         pos_start = @scanner.pos
 
         if try { match("'") && parse_nb_single_text(n, c) && match("'") }
-          value = from(pos_start).byteslice(1...-1)
-          value.gsub!(/(?:[\ \t]*\r?\n[\ \t]*)/, "\n")
-          value.gsub!(/\n(\n*)/) { $1.empty? ? " " : $1 }
+          source = from(pos_start)
+          value = source.byteslice(1...-1)
+          value.gsub!(/[ \t]*(?:\r?\n[ \t]*)+/) { |m| (c = m.count("\n")) == 1 ? " " : "\n" * (c - 1) }
           value.gsub!("''", "'")
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start), value, Nodes::Scalar::SINGLE_QUOTED))
+          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), source, value, Nodes::Scalar::SINGLE_QUOTED))
           true
         end
       end
@@ -2544,13 +2618,13 @@ module Psych
         try do
           if match("[")
             @context.within_flow_sequence(@scanner.pos, c) do
-              events_push_flush_properties(SequenceStart.new(Location.new(@source, @scanner.pos - 1, @scanner.pos), Nodes::Sequence::FLOW))
+              events_push_flush_properties(SequenceStart.new(@source, @scanner.pos - 1, Nodes::Sequence::FLOW, @scanner.pos))
 
               parse_s_separate(n, c)
               parse_fast_flow_seq_entries || parse_ns_s_flow_seq_entries(n, parse_in_flow(c))
 
               if match("]")
-                events_push_flush_properties(SequenceEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
+                events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos - 1, @scanner.pos))
                 true
               end
             end
@@ -2683,13 +2757,13 @@ module Psych
         try do
           if match("{")
             @context.within_flow_mapping(@scanner.pos, c) do
-              events_push_flush_properties(MappingStart.new(Location.new(@source, @scanner.pos - 1, @scanner.pos), Nodes::Mapping::FLOW))
+              events_push_flush_properties(MappingStart.new(@source, @scanner.pos - 1, Nodes::Mapping::FLOW, @scanner.pos))
 
               parse_s_separate(n, c)
               parse_fast_flow_map_entries || parse_ns_s_flow_map_entries(n, parse_in_flow(c))
 
               if match("}")
-                events_push_flush_properties(MappingEnd.new(Location.new(@source, @scanner.pos - 1, @scanner.pos)))
+                events_push_flush_properties(MappingEnd.new(@source, @scanner.pos - 1, @scanner.pos))
                 true
               end
             end
@@ -2918,7 +2992,7 @@ module Psych
       #   | ns-flow-pair-entry(n,c)
       def parse_ns_flow_pair(n, c)
         events_cache_push
-        events_push_flush_properties(MappingStart.new(Location.point(@source, @scanner.pos), Nodes::Mapping::FLOW))
+        events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::FLOW))
 
         if begin
           try do
@@ -2929,7 +3003,7 @@ module Psych
           end || parse_ns_flow_pair_entry(n, c)
         end then
           events_cache_flush
-          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
+          events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
           true
         else
           events_cache_discard
@@ -3139,27 +3213,53 @@ module Psych
       # c-indentation-indicator(m) ::=
       #   ( ns-dec-digit => m = ns-dec-digit - x:30 )
       #   ( <empty> => m = auto-detect() )
+      C_INDENTATION_LOOKAHEAD = /.*\n((?:\ *\n)*)(\ *)(.?)/.freeze
+      private_constant :C_INDENTATION_LOOKAHEAD
+
       def parse_c_indentation_indicator(n)
         pos_start = @scanner.pos
 
         if match(/[\u{31}-\u{39}]/)
           Integer(from(pos_start))
         else
-          @scanner.check(/.*\n((?:\ *\n)*)(\ *)(.?)/)
+          @scanner.check(C_INDENTATION_LOOKAHEAD)
 
           pre = @scanner[1]
           if !@scanner[3].empty?
             m = @scanner[2].length - n
           else
-            m = 0
-            while pre.match?(/\ {#{m}}/)
-              m += 1
+            # Find the max leading-space count across blank lines in pre
+            # without constructing dynamic regexes.
+            max_spaces = 0
+            line_spaces = 0
+            pidx = 0
+            plen = pre.bytesize
+            while pidx < plen
+              if pre.getbyte(pidx) == 0x0A
+                max_spaces = line_spaces if line_spaces > max_spaces
+                line_spaces = 0
+              else
+                line_spaces += 1
+              end
+              pidx += 1
             end
-            m = m - n - 1
+            m = max_spaces - n
           end
 
-          if m > 0 && pre.match?(/^.{#{m + n}}\ /)
-            raise_syntax_error("Invalid indentation indicator")
+          if m > 0
+            # Check if any blank line in pre has more than m+n spaces
+            check_len = m + n
+            pidx = 0
+            plen = pre.bytesize
+            while pidx < plen
+              line_spaces = 0
+              while pidx < plen && pre.getbyte(pidx) != 0x0A
+                line_spaces += 1
+                pidx += 1
+              end
+              pidx += 1 # skip newline
+              raise_syntax_error("Invalid indentation indicator") if line_spaces > check_len
+            end
           end
 
           m == 0 ? 1 : m
@@ -3486,12 +3586,12 @@ module Psych
 
         @context.within_block_sequence(@scanner.pos, n) do
           events_cache_push
-          events_push_flush_properties(SequenceStart.new(Location.point(@source, @scanner.pos), Nodes::Sequence::BLOCK))
+          events_push_flush_properties(SequenceStart.new(@source, @scanner.pos, Nodes::Sequence::BLOCK))
 
           indent = n + m
           if try { plus { try { parse_s_indent(indent) && (parse_fast_seq_entry(indent) || parse_c_l_block_seq_entry(indent)) } } }
             events_cache_flush
-            events_push_flush_properties(SequenceEnd.new(Location.point(@source, @scanner.pos)))
+            events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos))
             true
           else
             event = events_cache_pop[0]
@@ -3593,14 +3693,14 @@ module Psych
         return false unless @string.getbyte(@scanner.pos) == 0x2D # '-'
 
         events_cache_push
-        events_push_flush_properties(SequenceStart.new(Location.point(@source, @scanner.pos), Nodes::Sequence::BLOCK))
+        events_push_flush_properties(SequenceStart.new(@source, @scanner.pos, Nodes::Sequence::BLOCK))
 
         if try {
           parse_c_l_block_seq_entry(n) &&
           star { try { parse_s_indent(n) && parse_c_l_block_seq_entry(n) } }
         } then
           events_cache_flush
-          events_push_flush_properties(SequenceEnd.new(Location.point(@source, @scanner.pos)))
+          events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos))
           true
         else
           events_cache_discard
@@ -3618,12 +3718,12 @@ module Psych
 
         @context.within_block_mapping(@scanner.pos, n) do
           events_cache_push
-          events_push_flush_properties(MappingStart.new(Location.point(@source, @scanner.pos), Nodes::Mapping::BLOCK))
+          events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::BLOCK))
 
           indent = n + m
           if try { plus { try { parse_s_indent(indent) && (parse_fast_mapping_entry(indent) || parse_ns_l_block_map_entry(indent)) } } }
             events_cache_flush
-            events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
+            events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
             true
           else
             events_cache_discard
@@ -3794,14 +3894,14 @@ module Psych
       #   ( s-indent(n) ns-l-block-map-entry(n) )*
       def parse_ns_l_compact_mapping(n)
         events_cache_push
-        events_push_flush_properties(MappingStart.new(Location.point(@source, @scanner.pos), Nodes::Mapping::BLOCK))
+        events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::BLOCK))
 
         if try {
           (parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n)) &&
           star { try { parse_s_indent(n) && (parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n)) } }
         } then
           events_cache_flush
-          events_push_flush_properties(MappingEnd.new(Location.point(@source, @scanner.pos)))
+          events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
           true
         else
           events_cache_discard
@@ -3989,10 +4089,10 @@ module Psych
       #   l-any-document? )
       #   | ( l-document-prefix* l-explicit-document? ) )*
       def parse_l_yaml_stream
-        events_push_flush_properties(StreamStart.new(Location.point(@source, @scanner.pos)))
+        events_push_flush_properties(StreamStart.new(@source, @scanner.pos))
 
         star { parse_l_document_prefix }
-        @document_start_event = DocumentStart.new(Location.point(@source, @scanner.pos))
+        @document_start_event = DocumentStart.new(@source, @scanner.pos)
         @tag_directives = @document_start_event.tag_directives
         @document_end_event = nil
         parse_l_any_document
@@ -4015,7 +4115,7 @@ module Psych
 
         raise_syntax_error("Parser finished before end of input") unless @scanner.eos?
         document_end_event_flush
-        events_push_flush_properties(StreamEnd.new(Location.point(@source, @scanner.pos)))
+        events_push_flush_properties(StreamEnd.new(@source, @scanner.pos))
         true
       end
 
