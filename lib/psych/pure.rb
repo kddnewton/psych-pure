@@ -40,45 +40,51 @@ module Psych
     # column information from a byte offset.
     class Source
       def initialize(string)
+        @string = string
         @line_offsets = [0]
-        @trimmable_lines = []
         @last_line_index = 0
         @last_line_offset = 0
 
         pos = 0
         while (newline_idx = string.index("\n", pos))
-          # Find first non-space byte on this line using getbyte instead of regex
-          non_space_idx = pos
-          non_space_idx += 1 while non_space_idx < newline_idx && string.getbyte(non_space_idx) == 0x20
-
-          @trimmable_lines <<
-            if non_space_idx >= newline_idx
-              :blank
-            elsif string.getbyte(non_space_idx) == 0x23 # '#'
-              :comment
-            else
-              false
-            end
-
           pos = newline_idx + 1
           @line_offsets << pos
         end
 
         @line_offsets << string.bytesize if @line_offsets.last != string.bytesize
-        @trimmable_lines << true
       end
 
       def trim(offset)
-        while (l = line(offset)) != 0 && (offset == @line_offsets[l]) && @trimmable_lines[l - 1]
-          offset = @line_offsets[l - 1]
+        offsets = @line_offsets
+        string = @string
+        l = line(offset)
+
+        while l != 0 && offset == offsets[l]
+          prev_start = offsets[l - 1]
+          prev_end = offsets[l] - 1
+          idx = prev_start
+          idx += 1 while idx < prev_end && string.getbyte(idx) == 0x20
+          break unless idx >= prev_end || string.getbyte(idx) == 0x23
+          offset = prev_start
+          l -= 1
         end
 
         offset
       end
 
       def trim_comments(offset)
-        while (l = line(offset)) != 0 && (offset == @line_offsets[l]) && @trimmable_lines[l - 1] == :comment
-          offset = @line_offsets[l - 1]
+        offsets = @line_offsets
+        string = @string
+        l = line(offset)
+
+        while l != 0 && offset == offsets[l]
+          prev_start = offsets[l - 1]
+          prev_end = offsets[l] - 1
+          idx = prev_start
+          idx += 1 while idx < prev_end && string.getbyte(idx) == 0x20
+          break unless idx < prev_end && string.getbyte(idx) == 0x23
+          offset = prev_start
+          l -= 1
         end
 
         offset
