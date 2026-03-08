@@ -2160,6 +2160,7 @@ module Psych
       # c-non-specific-tag ::=
       #   '!'
       def parse_c_ns_tag_property
+        return unless @string.getbyte(@scanner.pos) == 0x21 # !
         pos_start = @scanner.pos
 
         if try { match("!<") && plus { parse_ns_uri_char } && match(">") }
@@ -2198,6 +2199,7 @@ module Psych
       # ns-anchor-char ::=
       #   ns-char - c-flow-indicator
       def parse_c_ns_anchor_property
+        return unless @string.getbyte(@scanner.pos) == 0x26 # &
         pos_start = @scanner.pos
 
         if try { match("&") && match(NS_ANCHOR_CHAR_PLUS) }
@@ -2275,6 +2277,7 @@ module Psych
       #   '"' nb-double-text(n,c)
       #   '"'
       def parse_c_double_quoted(n, c)
+        return unless @string.getbyte(@scanner.pos) == 0x22 # "
         pos_start = @scanner.pos
 
         @context.within_double_quoted_scalar(@scanner.pos) do
@@ -2402,6 +2405,7 @@ module Psych
       #   ''' nb-single-text(n,c)
       #   '''
       def parse_c_single_quoted(n, c)
+        return unless @string.getbyte(@scanner.pos) == 0x27 # '
         pos_start = @scanner.pos
 
         if try { match("'") && parse_nb_single_text(n, c) && match("'") }
@@ -3669,6 +3673,7 @@ module Psych
       #   '-' <not_followed_by_an_ns-char>
       #   s-l+block-indented(n,block-in)
       def parse_c_l_block_seq_entry(n)
+        return false unless @string.getbyte(@scanner.pos) == 0x2D # -
         try do
           match("-") &&
             !peek { parse_ns_char } &&
@@ -3889,6 +3894,7 @@ module Psych
       #   s-l+block-node(n,block-out)
       #   | ( e-node s-l-comments ) )
       def parse_c_l_block_map_implicit_value(n)
+        return false unless @string.getbyte(@scanner.pos) == 0x3A # :
         try do
           match(":") &&
             (parse_s_l_block_node(n, :block_out) || try { parse_e_node && parse_s_l_comments })
