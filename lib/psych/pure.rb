@@ -1337,6 +1337,7 @@ module Psych
         # In a bare document, explicit document starts (---) and ends (...) are
         # disallowed. In that case we need to check for those delimiters.
         @in_bare_document = false
+        @check_forbidden = false
 
         # In a literal or folded scalar, we need to track that state in order to
         # insert the correct plain text prefix.
@@ -1381,6 +1382,7 @@ module Psych
         # positions in bare documents.
         @forbidden_content = {}
         yaml.scan(/^(?:---|\.\.\.)(?=[\s]|\z)/m) { @forbidden_content[$~.begin(0)] = true }
+        @has_forbidden_content = !@forbidden_content.empty?
 
         parse_l_yaml_stream
         @comments = nil if comments
@@ -1431,7 +1433,7 @@ module Psych
       # regular expression). If it does, it advances the scanner and returns
       # true. If it does not, it returns false.
       def match(value)
-        return false if @in_bare_document && @forbidden_content[@scanner.pos]
+        return false if @check_forbidden && @forbidden_content[@scanner.pos]
         @scanner.skip(value)
       end
 
@@ -3504,15 +3506,8 @@ module Psych
       #   "- " plain_value "\n"
       # where the value is a simple plain scalar on a single line.
       # Group 1 = value.
-      FAST_SEQ_ENTRY = /
-        -[ \t]+
-        (
-          (?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))  # ns-plain-first
-          (?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))* # nb-ns-plain-in-line
-        )
-        [ \t]*\n
-      /x.freeze
-      private_constant :FAST_SEQ_ENTRY
+      FAST_SEQ_DASH = /-[ \t]+/.freeze
+      private_constant :FAST_SEQ_DASH
 
       # Parse a block sequence entry using the fast path when possible to avoid
       # going through the whole recursive descent parser.
@@ -3520,8 +3515,23 @@ module Psych
         # Only attempt when there are no pending properties and we're not in
         # a bare document with forbidden content at this position.
         return false if @anchor || @tag
-        return false if @in_bare_document && @forbidden_content[@scanner.pos]
-        return false unless @scanner.skip(FAST_SEQ_ENTRY)
+        return false if @check_forbidden && @forbidden_content[@scanner.pos]
+
+        pos = @scanner.pos
+        return false unless @scanner.skip(FAST_SEQ_DASH)
+
+        value_start = @scanner.pos
+        value = @scanner.scan(BLOCK_PLAIN_SCALAR)
+        unless value
+          @scanner.pos = pos
+          return false
+        end
+        value_end = @scanner.pos
+
+        unless @scanner.skip(FAST_MAPPING_TRAIL)
+          @scanner.pos = pos
+          return false
+        end
 
         # Check that the next line is not a continuation (indented deeper
         # than the current sequence level) or a nested structure.
@@ -3532,18 +3542,12 @@ module Psych
           next_byte = @string.getbyte(next_pos + next_indent)
 
           if next_indent > n && next_byte != nil && next_byte != 0x0A
-            @scanner.pos = next_pos - @scanner.matched_size
+            @scanner.pos = pos
             return false
           end
         end
 
-        value = @scanner[1]
-        value_start = next_pos - @scanner.matched_size + 2 # skip "- "
-        # Advance past any extra whitespace after "- "
-        value_start += 1 while @string.getbyte(value_start) == 0x20 || @string.getbyte(value_start) == 0x09
-        value_end = value_start + value.bytesize
-
-        events_push(Scalar.new(Location.new(@source, value_start, value_end), value, value, Nodes::Scalar::PLAIN))
+        events_push(FastScalar.new(@source, value_start, value_end, value))
 
         star { parse_l_comment }
         true
@@ -3640,7 +3644,7 @@ module Psych
         # Only attempt when there are no pending properties and we're not in
         # a bare document with forbidden content at this position.
         return false if @anchor || @tag
-        return false if @in_bare_document && @forbidden_content[@scanner.pos]
+        return false if @check_forbidden && @forbidden_content[@scanner.pos]
 
         # Match key, separator, value, and trailing whitespace+newline
         # using separate regexes to avoid capture group allocations.
@@ -3935,7 +3939,9 @@ module Psych
       #   <excluding_c-forbidden_content>
       def parse_l_bare_document
         previous = @in_bare_document
+        previous_check = @check_forbidden
         @in_bare_document = true
+        @check_forbidden = @has_forbidden_content
 
         result =
           try do
@@ -3944,6 +3950,7 @@ module Psych
           end
 
         @in_bare_document = previous
+        @check_forbidden = previous_check
         result
       end
 
