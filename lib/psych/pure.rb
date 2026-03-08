@@ -41,17 +41,21 @@ module Psych
     class Source
       def initialize(string)
         @string = string
-        @line_offsets = [0]
+        offsets = [0]
         @last_line_index = 0
         @last_line_offset = 0
 
-        pos = 0
-        while (newline_idx = string.index("\n", pos))
-          pos = newline_idx + 1
-          @line_offsets << pos
+        idx = 0
+        bsize = string.bytesize
+        while idx < bsize
+          if string.getbyte(idx) == 0x0A
+            offsets << idx + 1
+          end
+          idx += 1
         end
 
-        @line_offsets << string.bytesize if @line_offsets.last != string.bytesize
+        offsets << bsize if offsets.last != bsize
+        @line_offsets = offsets
       end
 
       def trim(offset)
@@ -1336,13 +1340,14 @@ module Psych
         private
 
         def within(object)
-          @contexts.push(object)
-          @deepest = @contexts.dup if @contexts.length > @deepest.length
+          contexts = @contexts
+          contexts.push(object)
+          @deepest = contexts.dup if contexts.length > @deepest.length
 
           begin
             yield
           ensure
-            @contexts.pop
+            contexts.pop
           end
         end
       end
@@ -1591,9 +1596,9 @@ module Psych
       def events_cache_discard
         mark = @events_cache_marks.pop or raise InternalException
         @events_cache_depth -= 1
-        # Truncate to the mark position without allocating a new array.
-        # In the common case (mark == size), this is a no-op.
-        @events_cache.slice!(mark..) if @events_cache.size > mark
+        # Truncate to the mark position. pop without args returns the
+        # element itself (no array allocation), unlike slice! or pop(n).
+        @events_cache.pop while @events_cache.size > mark
         nil
       end
 
@@ -1613,8 +1618,11 @@ module Psych
             events_push(cache[idx])
             idx += 1
           end
-          cache.clear if mark == 0
-          cache.slice!(mark..) if mark > 0 && len > mark
+          if mark == 0
+            cache.clear
+          else
+            cache.pop while cache.size > mark
+          end
         end
         # If not top level, events stay in the flat array — they belong
         # to the parent scope now. Nothing to do.
@@ -2399,7 +2407,7 @@ module Psych
         if try { match("'") && parse_nb_single_text(n, c) && match("'") }
           source = from(pos_start)
           value = source.byteslice(1...-1)
-          value.gsub!(/[ \t]*(?:\r?\n[ \t]*)+/) { |m| (c = m.count("\n")) == 1 ? " " : "\n" * (c - 1) }
+          value.gsub!(/[ \t]*(?:\r?\n[ \t]*)+/) { |m| (nl = m.count("\n")) == 1 ? " " : "\n" * (nl - 1) }
           value.gsub!("''", "'")
           events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), source, value, Nodes::Scalar::SINGLE_QUOTED))
           true
@@ -3100,8 +3108,7 @@ module Psych
 
           if source.include?("\n")
             value = source.dup
-            value.gsub!(/(?:[\ \t]*\r?\n[\ \t]*)/, "\n")
-            value.gsub!(/\n(\n*)/) { $1.empty? ? " " : $1 }
+            value.gsub!(/[ \t]*(?:\r?\n[ \t]*)+/) { |m| (nl = m.count("\n")) == 1 ? " " : "\n" * (nl - 1) }
           else
             value = source
           end
@@ -3402,7 +3409,7 @@ module Psych
             # When parsing all of the l_empty calls, we may have added a bunch
             # of empty lines to the events cache. We need to clear those out
             # here.
-            @events_cache.slice!(events_cache_size..) if @events_cache.size > events_cache_size
+            @events_cache.pop while @events_cache.size > events_cache_size
             false
           end
         end
