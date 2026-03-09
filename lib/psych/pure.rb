@@ -1236,7 +1236,7 @@ module Psych
 
     # The parser is responsible for taking a YAML string and converting it into
     # a series of events that can be used by the consumer.
-    class Parser
+    class Parser < StringScanner
       # A stack of contexts that the parser is currently within. We use this to
       # decorate error messages with the context in which they occurred.
       class Context
@@ -1363,8 +1363,9 @@ module Psych
 
       # Initialize a new parser with the given source string.
       def initialize(handler)
+        super("")
+
         # These are used to track the current state of the parser.
-        @scanner = nil
         @filename = nil
         @source = nil
 
@@ -1431,7 +1432,8 @@ module Psych
         end
 
         yaml += "\n" if !yaml.empty? && !yaml.end_with?("\n")
-        @scanner = StringScanner.new(yaml)
+        self.string = yaml
+
         @string = yaml
         @filename = filename
         @source = Source.new(yaml)
@@ -1453,7 +1455,7 @@ module Psych
 
       # Raise a syntax error with the given message.
       def raise_syntax_error(message)
-        raise @context.syntax_error(@source, @filename, @scanner.pos, message)
+        raise @context.syntax_error(@source, @filename, pos, message)
       end
 
       # ------------------------------------------------------------------------
@@ -1464,7 +1466,7 @@ module Psych
       # content that follows the current position. This method implements that
       # logic.
       def detect_indent(n)
-        pos = @scanner.pos
+        pos = self.pos
         in_seq = pos > 0 && case @string.getbyte(pos - 1); when 0x2D, 0x3F, 0x3A then true; end # - ? :
 
         # Scan past lines that are empty or comment-only to find the
@@ -1508,7 +1510,7 @@ module Psych
       # that was just matched by the scanner. It takes a position and returns
       # the input string from that position to the current scanner position.
       def from(pos)
-        @string.byteslice(pos, @scanner.pos - pos)
+        @string.byteslice(pos, self.pos - pos)
       end
 
       # This is the only way that the scanner is advanced. It checks if the
@@ -1516,16 +1518,16 @@ module Psych
       # regular expression). If it does, it advances the scanner and returns
       # true. If it does not, it returns false.
       def match(value)
-        return false if @check_forbidden && @forbidden_content[@scanner.pos]
-        @scanner.skip(value)
+        return false if @check_forbidden && @forbidden_content[pos]
+        skip(value)
       end
 
       # This is effectively the same as match, except that it does not advance
       # the scanner if the given match is found.
-      def peek
-        pos_start = @scanner.pos
+      def peek_ahead
+        pos_start = pos
         result = try { yield }
-        @scanner.pos = pos_start
+        self.pos = pos_start
         result
       end
 
@@ -1534,8 +1536,8 @@ module Psych
       # attempting to match the given block one or more times.
       def plus
         return false unless yield
-        pos_current = @scanner.pos
-        pos_current = @scanner.pos while yield && (@scanner.pos != pos_current)
+        pos_current = pos
+        pos_current = pos while yield && (pos != pos_current)
         true
       end
 
@@ -1543,25 +1545,25 @@ module Psych
       # more times. This is a convenience method that implements that logic by
       # attempting to match the given block zero or more times.
       def star
-        pos_current = @scanner.pos
-        pos_current = @scanner.pos while yield && (@scanner.pos != pos_current)
+        pos_current = pos
+        pos_current = pos while yield && (pos != pos_current)
         true
       end
 
       # True if the scanner it at the beginning of the string, the end of the
       # string, or the previous character was a newline.
       def start_of_line?
-        (pos = @scanner.pos) == 0 ||
-          @scanner.eos? ||
-          (@string.getbyte(pos - 1) == 0x0A)
+        (p = pos) == 0 ||
+          eos? ||
+          (@string.getbyte(p - 1) == 0x0A)
       end
 
       # This is our main backtracking mechanism. It attempts to parse forward
       # using the given block and return true. If it fails, it backtracks to the
       # original position and returns false.
       def try
-        pos_start = @scanner.pos
-        yield || (@scanner.pos = pos_start; false)
+        pos_start = pos
+        yield || (self.pos = pos_start; false)
       end
 
       # ------------------------------------------------------------------------
@@ -1581,7 +1583,7 @@ module Psych
         if @document_end_event
           comments_flush
           @document_end_event.accept(@handler)
-          @document_start_event = DocumentStart.new(@source, @scanner.pos)
+          @document_start_event = DocumentStart.new(@source, pos)
           @tag_directives = @document_start_event.tag_directives
           @document_end_event = nil
         end
@@ -1660,7 +1662,7 @@ module Psych
             when MappingStart, SequenceStart, Scalar
               @document_start_event.accept(@handler)
               @document_start_event = nil
-              @document_end_event = DocumentEnd.new(@source, @scanner.pos)
+              @document_end_event = DocumentEnd.new(@source, pos)
             end
           end
 
@@ -1720,7 +1722,7 @@ module Psych
       #   | b-carriage-return
       #   | b-line-feed
       def parse_b_break
-        @scanner.skip(/\u{0A}|\u{0D}\u{0A}?/)
+        skip(/\u{0A}|\u{0D}\u{0A}?/)
       end
 
       # [029]
@@ -1737,7 +1739,7 @@ module Psych
       # s-white ::=
       #   s-space | s-tab
       def parse_s_white
-        pos_start = @scanner.pos
+        pos_start = pos
 
         if match(/[\u{20}\u{09}]/)
           @text_prefix = from(pos_start) if @in_scalar
@@ -1749,7 +1751,7 @@ module Psych
       # ns-char ::=
       #   nb-char - s-white
       def parse_ns_char
-        pos_start = @scanner.pos
+        pos_start = pos
         if match(/[\x21-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]/)
           @text_prefix = from(pos_start) if @in_scalar
           true
@@ -1773,17 +1775,17 @@ module Psych
       # ns-tag-char ::=
       #   ns-uri-char - '!' - c-flow-indicator
       def parse_ns_tag_char
-        pos_start = @scanner.pos
+        pos_start = pos
 
         if parse_ns_uri_char
-          pos_end = @scanner.pos
-          @scanner.pos = pos_start
+          pos_end = pos
+          self.pos = pos_start
 
           if match("!") || match(/[,\[\]{}]/)
-            @scanner.pos = pos_start
+            self.pos = pos_start
             false
           else
-            @scanner.pos = pos_end
+            self.pos = pos_end
             true
           end
         end
@@ -1815,7 +1817,7 @@ module Psych
       private_constant :INDENT_STRINGS
 
       def parse_s_indent(n)
-        @scanner.skip(INDENT_STRINGS[n])
+        skip(INDENT_STRINGS[n])
       end
 
       # [031]
@@ -1826,13 +1828,13 @@ module Psych
       # s-indent(<n) ::=
       #   s-space{m} <where_m_<_n>
       def parse_s_indent_lt(n)
-        pos_start = @scanner.pos
-        @scanner.skip(/\u{20}*/)
+        pos_start = pos
+        skip(/\u{20}*/)
 
-        if (@scanner.pos - pos_start) < n
+        if (pos - pos_start) < n
           true
         else
-          @scanner.pos = pos_start
+          self.pos = pos_start
           false
         end
       end
@@ -1845,13 +1847,13 @@ module Psych
       # s-indent(<=n) ::=
       #   s-space{m} <where_m_<=_n>
       def parse_s_indent_le(n)
-        pos_start = @scanner.pos
-        @scanner.skip(/\u{20}*/)
+        pos_start = pos
+        skip(/\u{20}*/)
 
-        if (@scanner.pos - pos_start) <= n
+        if (pos - pos_start) <= n
           true
         else
-          @scanner.pos = pos_start
+          self.pos = pos_start
           false
         end
       end
@@ -1860,7 +1862,7 @@ module Psych
       # s-separate-in-line ::=
       #   s-white+ | <start_of_line>
       def parse_s_separate_in_line
-        @scanner.skip(/[ \t]+/) || start_of_line?
+        skip(/[ \t]+/) || start_of_line?
       end
 
       # [067]
@@ -1940,7 +1942,9 @@ module Psych
       def parse_s_flow_folded(n)
         try do
           parse_s_separate_in_line
-          parse_b_l_folded(n, :flow_in) && parse_s_flow_line_prefix(n)
+          parse_b_l_folded(n, :flow_in) &&
+            !(@check_forbidden && @forbidden_content[pos]) &&
+            parse_s_flow_line_prefix(n)
         end
       end
 
@@ -1948,12 +1952,12 @@ module Psych
       # c-nb-comment-text ::=
       #   '#' nb-char*
       def parse_c_nb_comment_text(inline)
-        return false unless @scanner.skip("#")
+        return false unless skip("#")
 
-        pos = @scanner.pos - 1
-        @scanner.skip(/[\t\x20-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]*/)
+        pos = self.pos - 1
+        skip(/[\t\x20-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]*/)
 
-        @comments[pos] ||= Comment.new(Location.new(@source, pos, @scanner.pos), from(pos), inline) if @comments
+        @comments[pos] ||= Comment.new(Location.new(@source, pos, self.pos), from(pos), inline) if @comments
         true
       end
 
@@ -1961,7 +1965,7 @@ module Psych
       # b-comment ::=
       #   b-non-content | <end_of_file>
       def parse_b_comment
-        parse_b_non_content || @scanner.eos?
+        parse_b_non_content || eos?
       end
 
       # [077]
@@ -2072,7 +2076,7 @@ module Psych
       # ns-yaml-version ::=
       #   ns-dec-digit+ '.' ns-dec-digit+
       def parse_ns_yaml_version
-        pos_start = @scanner.pos
+        pos_start = pos
 
         if try {
           plus { match(/[\u{30}-\u{39}]/) } &&
@@ -2104,7 +2108,7 @@ module Psych
       # c-named-tag-handle ::=
       #   '!' ns-word-char+ '!'
       def parse_c_tag_handle
-        pos_start = @scanner.pos
+        pos_start = pos
 
         if begin
           try do
@@ -2122,7 +2126,7 @@ module Psych
       # ns-tag-prefix ::=
       #   c-ns-local-tag-prefix | ns-global-tag-prefix
       def parse_ns_tag_prefix
-        pos_start = @scanner.pos
+        pos_start = pos
 
         if parse_c_ns_local_tag_prefix || parse_ns_global_tag_prefix
           @tag_directives[@tag_handle] = from(pos_start)
@@ -2151,7 +2155,7 @@ module Psych
       #   | ( c-ns-anchor-property
       #   ( s-separate(n,c) c-ns-tag-property )? )
       def parse_c_ns_properties(n, c)
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x21 # ! — must be tag first
           try do
             if parse_c_ns_tag_property
@@ -2187,8 +2191,8 @@ module Psych
       # c-non-specific-tag ::=
       #   '!'
       def parse_c_ns_tag_property
-        return unless @string.getbyte(@scanner.pos) == 0x21 # !
-        pos_start = @scanner.pos
+        return unless @string.getbyte(pos) == 0x21 # !
+        pos_start = pos
 
         if try { match("!<") && plus { parse_ns_uri_char } && match(">") }
           @tag = from(pos_start)[/\A!<(.*)>\z/, 1].gsub(/%([0-9a-fA-F]{2})/) { $1.to_i(16).chr(Encoding::UTF_8) }
@@ -2223,8 +2227,8 @@ module Psych
       # ns-anchor-char ::=
       #   ns-char - c-flow-indicator
       def parse_c_ns_anchor_property
-        return unless @string.getbyte(@scanner.pos) == 0x26 # &
-        pos_start = @scanner.pos
+        return unless @string.getbyte(pos) == 0x26 # &
+        pos_start = pos
 
         if try { match("&") && match(/[\x21-\x2B\x2D-\x5A\x5C\x5E-\x7A\x7C\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]+/) }
           @anchor = from(pos_start).byteslice(1..)
@@ -2236,10 +2240,10 @@ module Psych
       # c-ns-alias-node ::=
       #   '*' ns-anchor-name
       def parse_c_ns_alias_node
-        return false unless @string.getbyte(@scanner.pos) == 0x2A # '*'
-        pos_start = @scanner.pos
+        return false unless @string.getbyte(pos) == 0x2A # '*'
+        pos_start = pos
         if try { match("*") && match(/[\x21-\x2B\x2D-\x5A\x5C\x5E-\x7A\x7C\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]+/) }
-          events_push_flush_properties(Alias.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start).byteslice(1..)))
+          events_push_flush_properties(Alias.new(Location.new(@source, pos_start, pos), from(pos_start).byteslice(1..)))
           true
         end
       end
@@ -2248,7 +2252,7 @@ module Psych
       # e-scalar ::=
       #   <empty>
       def parse_e_scalar
-        events_push_flush_properties(Scalar.new(Location.point(@source, @scanner.pos), "", "", Nodes::Scalar::PLAIN))
+        events_push_flush_properties(Scalar.new(Location.point(@source, pos), "", "", Nodes::Scalar::PLAIN))
         true
       end
 
@@ -2297,11 +2301,11 @@ module Psych
       #   '"' nb-double-text(n,c)
       #   '"'
       def parse_c_double_quoted(n, c)
-        return unless @string.getbyte(@scanner.pos) == 0x22 # "
-        pos_start = @scanner.pos
+        return unless @string.getbyte(pos) == 0x22 # "
+        pos_start = pos
 
-        @context.within_double_quoted_scalar(@scanner.pos) do
-          if try { @scanner.skip("\"") && parse_nb_double_text(n, c) && @scanner.skip("\"") }
+        @context.within_double_quoted_scalar(pos) do
+          if try { skip("\"") && parse_nb_double_text(n, c) && skip("\"") }
             source = from(pos_start)
             value = source.byteslice(1...-1)
             value.gsub!(C_DOUBLE_QUOTED_GSUB) do |m|
@@ -2316,7 +2320,7 @@ module Psych
               end
             end
 
-            events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), source, value, Nodes::Scalar::DOUBLE_QUOTED))
+            events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, pos), source, value, Nodes::Scalar::DOUBLE_QUOTED))
             true
           end
         end
@@ -2333,7 +2337,7 @@ module Psych
       def parse_nb_double_text(n, c)
         case c
         when :block_key, :flow_key
-          @scanner.skip(/(?:[^\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/)
+          skip(/(?:[^\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/)
           true
         when :flow_in, :flow_out
           parse_nb_double_multi_line(n)
@@ -2349,9 +2353,10 @@ module Psych
       #   l-empty(n,flow-in)* s-flow-line-prefix(n)
       def parse_s_double_escaped(n)
         try do
-          (@scanner.skip(/[ \t]*/) || true) &&
-            @scanner.skip("\\") &&
+          (skip(/[ \t]*/) || true) &&
+            skip("\\") &&
             parse_b_non_content &&
+            !(@check_forbidden && @forbidden_content[pos]) &&
             star { parse_l_empty(n, :flow_in) } &&
             parse_s_flow_line_prefix(n)
         end
@@ -2379,9 +2384,9 @@ module Psych
         try do
           if parse_s_double_break(n)
             try do
-              @scanner.skip(/\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}|[\x21\x23-\x5B\x5D-\u{10FFFF}]/) &&
-                (@scanner.skip(/(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/) || true) &&
-                (parse_s_double_next_line(n) || (@scanner.skip(/[ \t]*/) || true))
+              skip(/\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}|[\x21\x23-\x5B\x5D-\u{10FFFF}]/) &&
+                (skip(/(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/) || true) &&
+                (parse_s_double_next_line(n) || (skip(/[ \t]*/) || true))
             end
 
             true
@@ -2395,8 +2400,8 @@ module Psych
       #   ( s-double-next-line(n) | s-white* )
       def parse_nb_double_multi_line(n)
         try do
-          (@scanner.skip(/(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/) || true) &&
-            (parse_s_double_next_line(n) || (@scanner.skip(/[ \t]*/) || true))
+          (skip(/(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/) || true) &&
+            (parse_s_double_next_line(n) || (skip(/[ \t]*/) || true))
         end
       end
 
@@ -2411,26 +2416,25 @@ module Psych
       # [119]
       # ns-single-char ::=
       #   nb-single-char - s-white
+      #
       # [120]
       # c-single-quoted(n,c) ::=
       #   ''' nb-single-text(n,c)
       #   '''
       def parse_c_single_quoted(n, c)
-        return unless @string.getbyte(@scanner.pos) == 0x27 # '
-        pos_start = @scanner.pos
+        return unless @string.getbyte(pos) == 0x27 # '
+        pos_start = pos
 
-        if try { @scanner.skip("'") && parse_nb_single_text(n, c) && @scanner.skip("'") }
+        if try { skip("'") && parse_nb_single_text(n, c) && skip("'") }
           source = from(pos_start)
           value = source.byteslice(1...-1)
           value.gsub!(/[ \t]*(?:\r?\n[ \t]*)+/) { |m| (nl = m.count("\n")) == 1 ? " " : "\n" * (nl - 1) }
           value.gsub!("''", "'")
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), source, value, Nodes::Scalar::SINGLE_QUOTED))
+          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, pos), source, value, Nodes::Scalar::SINGLE_QUOTED))
           true
         end
       end
 
-      # Bulk regex: matches runs of valid single-quoted chars. Single quotes
-      # are escaped as '' (two consecutive quotes).
       # [121]
       # nb-single-text(n,c) ::=
       #   ( c = flow-out => nb-single-multi-line(n) )
@@ -2440,7 +2444,7 @@ module Psych
       def parse_nb_single_text(n, c)
         case c
         when :block_key, :flow_key
-          @scanner.skip(/(?:[^'\n\r]|'')*/)
+          skip(/(?:[^'\n\r]|'')*/)
           true
         when :flow_in, :flow_out
           parse_nb_single_multi_line(n)
@@ -2458,9 +2462,9 @@ module Psych
         try do
           if parse_s_flow_folded(n)
             try do
-              @scanner.skip(/''|[\x21-\x26\x28-\u{10FFFF}]/) &&
-                (@scanner.skip(/(?:[ \t]*(?:[^ \t'\n\r]|''))*/) || true) &&
-                (parse_s_single_next_line(n) || (@scanner.skip(/[ \t]*/) || true))
+              skip(/''|[\x21-\x26\x28-\u{10FFFF}]/) &&
+                (skip(/(?:[ \t]*(?:[^ \t'\n\r]|''))*/) || true) &&
+                (parse_s_single_next_line(n) || (skip(/[ \t]*/) || true))
             end
 
             true
@@ -2474,13 +2478,11 @@ module Psych
       #   ( s-single-next-line(n) | s-white* )
       def parse_nb_single_multi_line(n)
         try do
-          (@scanner.skip(/(?:[ \t]*(?:[^ \t'\n\r]|''))*/) || true) &&
-            (parse_s_single_next_line(n) || (@scanner.skip(/[ \t]*/) || true))
+          (skip(/(?:[ \t]*(?:[^ \t'\n\r]|''))*/) || true) &&
+            (parse_s_single_next_line(n) || (skip(/[ \t]*/) || true))
         end
       end
 
-      # Bulk regex: first alternative matches ns-char excluding all
-      # c-indicators; second alternative matches ?:- followed by ns-plain-safe.
       # [126]
       # ns-plain-first(c) ::=
       #   ( ns-char - c-indicator )
@@ -2513,7 +2515,7 @@ module Psych
       # [129]
       # ns-plain-safe-in ::=
       #   ns-char - c-flow-indicator
-      # Same character class as NS_ANCHOR_CHAR
+      #
       # [130]
       # ns-plain-char(c) ::=
       #   ( ns-plain-safe(c) - ':' - '#' )
@@ -2521,45 +2523,44 @@ module Psych
       #   | ( ':' <followed_by_an_ns-plain-safe(c)> )
       def parse_ns_plain_char(c)
         try do
-          pos_start = @scanner.pos
+          pos_start = pos
 
           if parse_ns_plain_safe(c)
-            pos_end = @scanner.pos
-            @scanner.pos = pos_start
+            pos_end = pos
+            self.pos = pos_start
 
             if match(/[:#]/)
               false
             else
-              @scanner.pos = pos_end
+              self.pos = pos_end
               true
             end
           end
         end ||
         try do
-          pos_start = @scanner.pos
-          @scanner.pos -= 1
+          pos_start = pos
+          self.pos -= 1
 
           was_ns_char = parse_ns_char
-          @scanner.pos = pos_start
+          self.pos = pos_start
 
           was_ns_char && match("#")
         end ||
         try do
-          match(":") && peek { parse_ns_plain_safe(c) }
+          match(":") && peek_ahead { parse_ns_plain_safe(c) }
         end
       end
 
-      # Bulk regex matching the continuation of a plain scalar on one line.
-      # ns-plain-char allows non-whitespace chars except bare : and #, but
-      # permits :followed-by-non-space and non-space-preceding-#.
       # [132]
       # nb-ns-plain-in-line(c) ::=
       #   ( s-white*
       #   ns-plain-char(c) )*
       def parse_nb_ns_plain_in_line(c)
         case c
-        when :flow_out, :block_key then @scanner.skip(/(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])#))*/)
-        when :flow_in, :flow_key then @scanner.skip(/(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/)
+        when :flow_out, :block_key
+          skip(/(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])#))*/)
+        when :flow_in, :flow_key
+          skip(/(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/)
         end
         true
       end
@@ -2611,7 +2612,6 @@ module Psych
         end
       end
 
-      # A full plain scalar in flow-in context: ns-plain-first(flow-in) + nb-ns-plain-in-line(flow-in)
       # [137]
       # c-flow-sequence(n,c) ::=
       #   '[' s-separate(n,c)?
@@ -2619,14 +2619,14 @@ module Psych
       def parse_c_flow_sequence(n, c)
         try do
           if match("[")
-            @context.within_flow_sequence(@scanner.pos, c) do
-              events_push_flush_properties(SequenceStart.new(@source, @scanner.pos - 1, Nodes::Sequence::FLOW, @scanner.pos))
+            @context.within_flow_sequence(pos, c) do
+              events_push_flush_properties(SequenceStart.new(@source, pos - 1, Nodes::Sequence::FLOW, pos))
 
               parse_s_separate(n, c)
               parse_fast_flow_seq_entries || parse_ns_s_flow_seq_entries(n, parse_in_flow(c))
 
               if match("]")
-                events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos - 1, @scanner.pos))
+                events_push_flush_properties(SequenceEnd.new(@source, pos - 1, pos))
                 true
               end
             end
@@ -2641,7 +2641,7 @@ module Psych
       def parse_fast_flow_seq_entries
         return false if @anchor || @tag
 
-        pos = @scanner.pos
+        pos_start = pos
 
         # Quick check: first char must be a possible plain scalar start
         case @string.getbyte(pos)
@@ -2654,22 +2654,22 @@ module Psych
         entries = []
 
         loop do
-          entry_start = @scanner.pos
-          unless @scanner.skip(/(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/)
-            @scanner.pos = pos
+          entry_start = pos
+          unless skip(/(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/)
+            self.pos = pos_start
             return false
           end
-          entry_end = @scanner.pos
-          entry_value = @scanner.matched
+          entry_end = pos
+          entry_value = matched
 
-          @scanner.skip(/[ \t]*/)
-          next_byte = @string.getbyte(@scanner.pos)
+          skip(/[ \t]*/)
+          next_byte = @string.getbyte(pos)
 
           # If followed by ':' + space/flow-indicator/EOL, this is a flow pair — bail
           if next_byte == 0x3A # :
-            case @string.getbyte(@scanner.pos + 1)
+            case @string.getbyte(pos + 1)
             when 0x20, 0x09, 0x2C, 0x5D, 0x7D, 0x5B, 0x7B, 0x0A, 0x0D, nil # space tab , ] } [ { \n \r EOF
-              @scanner.pos = pos
+              self.pos = pos_start
               return false
             end
           end
@@ -2677,7 +2677,7 @@ module Psych
           # If followed by newline, this is multi-line — bail
           case next_byte
           when 0x0A, 0x0D
-            @scanner.pos = pos
+            self.pos = pos_start
             return false
           end
 
@@ -2685,16 +2685,15 @@ module Psych
 
           case next_byte
           when 0x2C # ,
-            @scanner.pos += 1
-            @scanner.skip(/[ \t]*/)
-            next_byte2 = @string.getbyte(@scanner.pos)
-            # Trailing comma before ]
-            break if next_byte2 == 0x5D # ]
-            # Bail on newline or non-plain-scalar start
-            case next_byte2
+            self.pos += 1
+            skip(/[ \t]*/)
+
+            case @string.getbyte(pos)
+            when 0x5D # ]
+              break # Trailing comma before ]
             when 0x0A, 0x0D, 0x5B, 0x7B, 0x27, 0x22, 0x21, 0x26, 0x2A, 0x3F
-              @scanner.pos = pos
-              return false
+              self.pos = pos_start
+              return false # Bail on newline or non-plain-scalar start
             end
           else
             break
@@ -2702,8 +2701,8 @@ module Psych
         end
 
         # Must end with ] to be a valid fast path
-        unless @string.getbyte(@scanner.pos) == 0x5D # ]
-          @scanner.pos = pos
+        unless @string.getbyte(pos) == 0x5D # ]
+          self.pos = pos_start
           return false
         end
 
@@ -2746,8 +2745,6 @@ module Psych
         parse_ns_flow_pair(n, c) || parse_ns_flow_node(n, c)
       end
 
-      # Fast-path regex for flow mapping entry: key: value (both plain scalars)
-      # Matches "key: value" where key and value are plain flow-in scalars.
       # [140]
       # c-flow-mapping(n,c) ::=
       #   '{' s-separate(n,c)?
@@ -2755,14 +2752,14 @@ module Psych
       def parse_c_flow_mapping(n, c)
         try do
           if match("{")
-            @context.within_flow_mapping(@scanner.pos, c) do
-              events_push_flush_properties(MappingStart.new(@source, @scanner.pos - 1, Nodes::Mapping::FLOW, @scanner.pos))
+            @context.within_flow_mapping(pos, c) do
+              events_push_flush_properties(MappingStart.new(@source, pos - 1, Nodes::Mapping::FLOW, pos))
 
               parse_s_separate(n, c)
               parse_fast_flow_map_entries || parse_ns_s_flow_map_entries(n, parse_in_flow(c))
 
               if match("}")
-                events_push_flush_properties(MappingEnd.new(@source, @scanner.pos - 1, @scanner.pos))
+                events_push_flush_properties(MappingEnd.new(@source, pos - 1, pos))
                 true
               end
             end
@@ -2776,7 +2773,7 @@ module Psych
       def parse_fast_flow_map_entries
         return false if @anchor || @tag
 
-        pos = @scanner.pos
+        pos_start = pos
 
         # Quick check: first char must be a possible plain scalar start
         case @string.getbyte(pos)
@@ -2789,22 +2786,22 @@ module Psych
         entries = []
 
         loop do
-          entry_start = @scanner.pos
-          unless @scanner.skip(/((?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*):[ \t]+((?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*)/)
-            @scanner.pos = pos
+          entry_start = pos
+          unless skip(/((?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*):[ \t]+((?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s,\[\]{}\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*)/)
+            self.pos = pos_start
             return false
           end
-          matched_key = @scanner[1]
-          matched_value = @scanner[2]
-          matched_end = @scanner.pos
+          matched_key = self[1]
+          matched_value = self[2]
+          matched_end = pos
 
-          @scanner.skip(/[ \t]*/)
-          next_byte = @string.getbyte(@scanner.pos)
+          skip(/[ \t]*/)
+          next_byte = @string.getbyte(pos)
 
           # Bail on newline (multi-line flow)
           case next_byte
           when 0x0A, 0x0D
-            @scanner.pos = pos
+            self.pos = pos_start
             return false
           end
 
@@ -2812,15 +2809,15 @@ module Psych
 
           case next_byte
           when 0x2C # ,
-            @scanner.pos += 1
-            @scanner.skip(/[ \t]*/)
-            next_byte2 = @string.getbyte(@scanner.pos)
+            self.pos += 1
+            skip(/[ \t]*/)
+            next_byte2 = @string.getbyte(pos)
             # Trailing comma before }
             break if next_byte2 == 0x7D # }
             # Bail on newline or non-plain-scalar start
             case next_byte2
             when 0x0A, 0x0D, 0x5B, 0x7B, 0x27, 0x22, 0x21, 0x26, 0x2A, 0x3F
-              @scanner.pos = pos
+              self.pos = pos_start
               return false
             end
           else
@@ -2829,8 +2826,8 @@ module Psych
         end
 
         # Must end with } to be a valid fast path
-        unless @string.getbyte(@scanner.pos) == 0x7D # }
-          @scanner.pos = pos
+        unless @string.getbyte(pos) == 0x7D # }
+          self.pos = pos_start
           return false
         end
 
@@ -2876,10 +2873,10 @@ module Psych
       #   ns-flow-map-explicit-entry(n,c) )
       #   | ns-flow-map-implicit-entry(n,c)
       def parse_ns_flow_map_entry(n, c)
-        if @string.getbyte(@scanner.pos) == 0x3F # ?
+        if @string.getbyte(pos) == 0x3F # ?
           try do
             match("?") &&
-              peek { @scanner.eos? || parse_s_white || parse_b_break } &&
+              peek_ahead { eos? || parse_s_white || parse_b_break } &&
               parse_s_separate(n, c) && parse_ns_flow_map_explicit_entry(n, c)
           end || parse_ns_flow_map_implicit_entry(n, c)
         else
@@ -2903,7 +2900,7 @@ module Psych
       #   | c-ns-flow-map-empty-key-entry(n,c)
       #   | c-ns-flow-map-json-key-entry(n,c)
       def parse_ns_flow_map_implicit_entry(n, c)
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x3A # : — must be empty key entry
           parse_c_ns_flow_map_empty_key_entry(n, c)
         when 0x5B, 0x7B, 0x27, 0x22 # [ { ' " — must be JSON key
@@ -2954,7 +2951,7 @@ module Psych
       def parse_c_ns_flow_map_separate_value(n, c)
         try do
           match(":") &&
-            !peek { parse_ns_plain_safe(c) } &&
+            !peek_ahead { parse_ns_plain_safe(c) } &&
             (try { parse_s_separate(n, c) && parse_ns_flow_node(n, c) } || parse_e_node)
         end
       end
@@ -3000,13 +2997,13 @@ module Psych
       #   | ns-flow-pair-entry(n,c)
       def parse_ns_flow_pair(n, c)
         events_cache_push
-        events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::FLOW))
+        events_push_flush_properties(MappingStart.new(@source, pos, Nodes::Mapping::FLOW))
 
         matched =
-          if @string.getbyte(@scanner.pos) == 0x3F # ?
+          if @string.getbyte(pos) == 0x3F # ?
             try do
               match("?") &&
-                peek { @scanner.eos? || parse_s_white || parse_b_break } &&
+                peek_ahead { eos? || parse_s_white || parse_b_break } &&
                 parse_s_separate(n, c) &&
                 parse_ns_flow_map_explicit_entry(n, c)
             end || parse_ns_flow_pair_entry(n, c)
@@ -3016,7 +3013,7 @@ module Psych
 
         if matched
           events_cache_flush
-          events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
+          events_push_flush_properties(MappingEnd.new(@source, pos))
           true
         else
           events_cache_discard
@@ -3030,7 +3027,7 @@ module Psych
       #   | c-ns-flow-map-empty-key-entry(n,c)
       #   | c-ns-flow-pair-json-key-entry(n,c)
       def parse_ns_flow_pair_entry(n, c)
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x3A # : — empty key
           parse_c_ns_flow_map_empty_key_entry(n, c)
         when 0x5B, 0x7B, 0x27, 0x22 # [ { ' " — JSON key
@@ -3068,11 +3065,11 @@ module Psych
       #   s-separate-in-line?
       #   <at_most_1024_characters_altogether>
       def parse_ns_s_implicit_yaml_key(c)
-        pos_start = @scanner.pos
+        pos_start = pos
         try do
           if parse_ns_flow_yaml_node(nil, c)
             parse_s_separate_in_line
-            (@scanner.pos - pos_start) <= 1024
+            (pos - pos_start) <= 1024
           end
         end
       end
@@ -3083,11 +3080,11 @@ module Psych
       #   s-separate-in-line?
       #   <at_most_1024_characters_altogether>
       def parse_c_s_implicit_json_key(c)
-        pos_start = @scanner.pos
+        pos_start = pos
         try do
           if parse_c_flow_json_node(nil, c)
             parse_s_separate_in_line
-            (@scanner.pos - pos_start) <= 1024
+            (pos - pos_start) <= 1024
           end
         end
       end
@@ -3103,7 +3100,7 @@ module Psych
       # ns-flow-yaml-content(n,c) ::=
       #   ns-plain(n,c)
       def parse_ns_flow_yaml_content(n, c)
-        pos_start = @scanner.pos
+        pos_start = pos
         result =
           case c
           when :block_key then parse_ns_plain_one_line(c)
@@ -3123,7 +3120,7 @@ module Psych
             value = source
           end
 
-          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, @scanner.pos), source, value, Nodes::Scalar::PLAIN))
+          events_push_flush_properties(Scalar.new(Location.new(@source, pos_start, pos), source, value, Nodes::Scalar::PLAIN))
         end
 
         result
@@ -3134,7 +3131,7 @@ module Psych
       #   c-flow-sequence(n,c) | c-flow-mapping(n,c)
       #   | c-single-quoted(n,c) | c-double-quoted(n,c)
       def parse_c_flow_json_content(n, c)
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x5B then parse_c_flow_sequence(n, c)  # [
         when 0x7B then parse_c_flow_mapping(n, c)   # {
         when 0x27 then parse_c_single_quoted(n, c)  # '
@@ -3146,7 +3143,7 @@ module Psych
       # ns-flow-content(n,c) ::=
       #   ns-flow-yaml-content(n,c) | c-flow-json-content(n,c)
       def parse_ns_flow_content(n, c)
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x5B then parse_c_flow_sequence(n, c)  # [
         when 0x7B then parse_c_flow_mapping(n, c)   # {
         when 0x27 then parse_c_single_quoted(n, c)  # '
@@ -3164,7 +3161,7 @@ module Psych
       #   ns-flow-yaml-content(n,c) )
       #   | e-scalar ) )
       def parse_ns_flow_yaml_node(n, c)
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x2A # * — alias
           parse_c_ns_alias_node
         when 0x21, 0x26 # ! & — properties, then content or empty
@@ -3198,7 +3195,7 @@ module Psych
       #   ns-flow-content(n,c) )
       #   | e-scalar ) )
       def parse_ns_flow_node(n, c)
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x2A # * — alias
           parse_c_ns_alias_node
         when 0x21, 0x26 # ! & — properties first, then optional content
@@ -3228,12 +3225,12 @@ module Psych
               try do
                 (m = parse_c_indentation_indicator(n)) &&
                   (t = parse_c_chomping_indicator) &&
-                  peek { @scanner.eos? || parse_s_white || parse_b_break }
+                  peek_ahead { eos? || parse_s_white || parse_b_break }
               end ||
               try do
                 (t = parse_c_chomping_indicator) &&
                   (m = parse_c_indentation_indicator(n)) &&
-                  peek { @scanner.eos? || parse_s_white || parse_b_break }
+                  peek_ahead { eos? || parse_s_white || parse_b_break }
               end
             ) && parse_s_b_comment
           end
@@ -3246,16 +3243,16 @@ module Psych
       #   ( ns-dec-digit => m = ns-dec-digit - x:30 )
       #   ( <empty> => m = auto-detect() )
       def parse_c_indentation_indicator(n)
-        pos_start = @scanner.pos
+        pos_start = pos
 
         if match(/[\u{31}-\u{39}]/)
           Integer(from(pos_start))
         else
-          @scanner.check(/.*\n((?:\ *\n)*)(\ *)(.?)/)
+          check(/.*\n((?:\ *\n)*)(\ *)(.?)/)
 
-          pre = @scanner[1]
-          if !@scanner[3].empty?
-            m = @scanner[2].length - n
+          pre = self[1]
+          if !self[3].empty?
+            m = self[2].length - n
           else
             # Find the max leading-space count across blank lines in pre
             # without constructing dynamic regexes.
@@ -3314,9 +3311,9 @@ module Psych
       #   ( t = keep => b-as-line-feed | <end_of_file> )
       def parse_b_chomped_last(t)
         case t
-        when :clip then parse_b_as_line_feed || @scanner.eos?
-        when :keep then parse_b_as_line_feed || @scanner.eos?
-        when :strip then parse_b_non_content || @scanner.eos?
+        when :clip then parse_b_as_line_feed || eos?
+        when :keep then parse_b_as_line_feed || eos?
+        when :strip then parse_b_non_content || eos?
         else raise InternalException, t.inspect
         end
       end
@@ -3381,7 +3378,7 @@ module Psych
 
         m = nil
         t = nil
-        pos_start = @scanner.pos
+        pos_start = pos
 
         if try {
           match("|") &&
@@ -3402,7 +3399,7 @@ module Psych
             raise InternalException, t.inspect
           end
 
-          location = Location.new(@source, pos_start, @scanner.pos).trim_comments
+          location = Location.new(@source, pos_start, pos).trim_comments
           events_push_flush_properties(Scalar.new(location, @string.byteslice(location.range).chomp, value, Nodes::Scalar::LITERAL))
           true
         else
@@ -3421,7 +3418,7 @@ module Psych
 
         try do
           if star { parse_l_empty(n, :block_in) } && parse_s_indent(n)
-            pos_start = @scanner.pos
+            pos_start = pos
 
             if match(/[\t\x20-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]+/)
               events_push(from(pos_start))
@@ -3474,7 +3471,7 @@ module Psych
 
         m = nil
         t = nil
-        pos_start = @scanner.pos
+        pos_start = pos
 
         if try {
           match(">") &&
@@ -3501,7 +3498,7 @@ module Psych
             raise InternalException, t.inspect
           end
 
-          location = Location.new(@source, pos_start, @scanner.pos).trim_comments
+          location = Location.new(@source, pos_start, pos).trim_comments
           events_push_flush_properties(Scalar.new(location, @string.byteslice(location.range).chomp, value, Nodes::Scalar::FOLDED))
           true
         else
@@ -3518,7 +3515,7 @@ module Psych
       def parse_s_nb_folded_text(n)
         try do
           if parse_s_indent(n) && parse_ns_char
-            pos_start = @scanner.pos
+            pos_start = pos
             match(/[\t\x20-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]*/)
             events_push("#{@text_prefix}#{from(pos_start)}")
             true
@@ -3544,7 +3541,7 @@ module Psych
       def parse_s_nb_spaced_text(n)
         try do
           if parse_s_indent(n) && parse_s_white
-            pos_start = @scanner.pos
+            pos_start = pos
             match(/[\t\x20-\x7E\u0085\u00A0-\uD7FF\uE000-\uFEFE\uFF00-\uFFFD\u{10000}-\u{10FFFF}]*/)
             events_push("#{@text_prefix}#{from(pos_start)}")
             true
@@ -3613,12 +3610,12 @@ module Psych
       def parse_l_block_sequence(n)
         return false if (m = detect_indent(n)) == 0
 
-        @context.within_block_sequence(@scanner.pos, n) do
+        @context.within_block_sequence(pos, n) do
           indent = n + m
 
           # Cache the SequenceStart + first entry speculatively.
           events_cache_push
-          events_push_flush_properties(SequenceStart.new(@source, @scanner.pos, Nodes::Sequence::BLOCK))
+          events_push_flush_properties(SequenceStart.new(@source, pos, Nodes::Sequence::BLOCK))
 
           if try { parse_s_indent(indent) && (parse_fast_seq_entry(indent) || parse_c_l_block_seq_entry(indent)) }
             # First entry succeeded — flush and continue without outer cache.
@@ -3626,17 +3623,17 @@ module Psych
 
             indent_str = INDENT_STRINGS[indent]
             while true
-              pos_before = @scanner.pos
+              pos_before = pos
 
-              if (@check_forbidden && @forbidden_content[pos_before]) || !@scanner.skip(indent_str)
+              if (@check_forbidden && @forbidden_content[pos_before]) || !skip(indent_str)
                 break
               elsif !parse_fast_seq_entry(indent) && !parse_c_l_block_seq_entry(indent)
-                @scanner.pos = pos_before
+                self.pos = pos_before
                 break
               end
             end
 
-            events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos))
+            events_push_flush_properties(SequenceEnd.new(@source, pos))
             true
           else
             event = events_cache_pop_first
@@ -3657,40 +3654,40 @@ module Psych
         # Only attempt when there are no pending properties and we're not in
         # a bare document with forbidden content at this position.
         return false if @anchor || @tag
-        return false if @check_forbidden && @forbidden_content[@scanner.pos]
+        return false if @check_forbidden && @forbidden_content[pos]
 
-        pos = @scanner.pos
-        return false unless @scanner.skip(/-[ \t]+/)
+        pos_start = pos
+        return false unless skip(/-[ \t]+/)
 
-        value_start = @scanner.pos
-        if !(value_len = @scanner.skip(/(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))*/))
-          @scanner.pos = pos
+        value_start = pos
+        if !(value_len = skip(/(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))*/))
+          self.pos = pos_start
           return false
         end
 
-        value_end = @scanner.pos
-        unless @scanner.skip(/[ \t]*\n/)
-          @scanner.pos = pos
+        value_end = pos
+        unless skip(/[ \t]*\n/)
+          self.pos = pos_start
           return false
         end
 
         # Check that the next line is not a continuation (indented deeper
         # than the current sequence level) or a nested structure.
-        next_pos = @scanner.pos
+        next_pos = pos
         if next_pos < @string.bytesize
           next_indent = 0
           next_indent += 1 while @string.getbyte(next_pos + next_indent) == 0x20
           next_byte = @string.getbyte(next_pos + next_indent)
 
           if next_indent > n && next_byte != nil && next_byte != 0x0A
-            @scanner.pos = pos
+            self.pos = pos_start
             return false
           end
         end
 
         emit_fast_scalar(value_start, value_end)
 
-        nb = @string.getbyte(@scanner.pos)
+        nb = @string.getbyte(pos)
         star { parse_l_comment } if nb == 0x0A || nb == 0x20 || nb == 0x09 || nb == 0x23 # \n, space, tab, #
         true
       end
@@ -3704,10 +3701,10 @@ module Psych
       #   '-' <not_followed_by_an_ns-char>
       #   s-l+block-indented(n,block-in)
       def parse_c_l_block_seq_entry(n)
-        return false unless @string.getbyte(@scanner.pos) == 0x2D # -
+        return false unless @string.getbyte(pos) == 0x2D # -
         try do
           match("-") &&
-            !peek { parse_ns_char } &&
+            !peek_ahead { parse_ns_char } &&
             parse_s_l_block_indented(n, :block_in)
         end
       end
@@ -3724,7 +3721,7 @@ module Psych
 
         try do
           parse_s_indent(m) &&
-            if @string.getbyte(@scanner.pos) == 0x2D # -
+            if @string.getbyte(pos) == 0x2D # -
               parse_ns_l_compact_sequence(n + 1 + m) || parse_ns_l_compact_mapping(n + 1 + m)
             else
               parse_ns_l_compact_mapping(n + 1 + m)
@@ -3737,17 +3734,17 @@ module Psych
       #   c-l-block-seq-entry(n)
       #   ( s-indent(n) c-l-block-seq-entry(n) )*
       def parse_ns_l_compact_sequence(n)
-        return false unless @string.getbyte(@scanner.pos) == 0x2D # '-'
+        return false unless @string.getbyte(pos) == 0x2D # '-'
 
         # Cache the SequenceStart + first entry speculatively.
         events_cache_push
-        events_push_flush_properties(SequenceStart.new(@source, @scanner.pos, Nodes::Sequence::BLOCK))
+        events_push_flush_properties(SequenceStart.new(@source, pos, Nodes::Sequence::BLOCK))
 
         if try { parse_c_l_block_seq_entry(n) }
           # First entry succeeded — flush and continue without outer cache.
           events_cache_flush
           star { try { parse_s_indent(n) && parse_c_l_block_seq_entry(n) } }
-          events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos))
+          events_push_flush_properties(SequenceEnd.new(@source, pos))
           true
         else
           events_cache_discard
@@ -3763,13 +3760,13 @@ module Psych
       def parse_l_block_mapping(n)
         return false if (m = detect_indent(n)) == 0
 
-        @context.within_block_mapping(@scanner.pos, n) do
+        @context.within_block_mapping(pos, n) do
           indent = n + m
 
           # Cache the MappingStart + first entry speculatively. If the first
           # entry fails, we discard everything.
           events_cache_push
-          events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::BLOCK))
+          events_push_flush_properties(MappingStart.new(@source, pos, Nodes::Mapping::BLOCK))
 
           if try { parse_s_indent(indent) && (parse_fast_mapping_entry(indent) || parse_ns_l_block_map_entry(indent)) }
             # First entry succeeded — the mapping is committed. Flush the
@@ -3782,17 +3779,17 @@ module Psych
             indent_str = INDENT_STRINGS[indent]
 
             while true
-              pos_before = @scanner.pos
+              pos_before = pos
 
-              if (@check_forbidden && @forbidden_content[pos_before]) || !@scanner.skip(indent_str)
+              if (@check_forbidden && @forbidden_content[pos_before]) || !skip(indent_str)
                 break
               elsif !parse_fast_mapping_entry(indent) && !parse_ns_l_block_map_entry(indent)
-                @scanner.pos = pos_before
+                self.pos = pos_before
                 break
               end
             end
 
-            events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
+            events_push_flush_properties(MappingEnd.new(@source, pos))
             true
           else
             events_cache_discard
@@ -3808,53 +3805,53 @@ module Psych
         # Only attempt when there are no pending properties and we're not in
         # a bare document with forbidden content at this position.
         return false if @anchor || @tag
-        return false if @check_forbidden && @forbidden_content[@scanner.pos]
+        return false if @check_forbidden && @forbidden_content[pos]
 
         # Match key, separator, value, and trailing whitespace+newline
         # using separate regexes to avoid capture group allocations.
-        pos = @scanner.pos
-        key_len = @scanner.skip(/(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))*/)
+        pos_start = pos
+        key_len = skip(/(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))*/)
         return false unless key_len
 
-        unless @scanner.skip(/:[ \t]+/)
-          @scanner.pos = pos
+        unless skip(/:[ \t]+/)
+          self.pos = pos_start
           return false
         end
 
-        value_start = @scanner.pos
-        if !(value_len = @scanner.skip(/(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))*/))
-          @scanner.pos = pos
+        value_start = pos
+        if !(value_len = skip(/(?:[^\s,\[\]{}#&*!|>'"%@`\uFEFF?:-]|[?:-](?=[^\s\uFEFF]))(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])\#))*/))
+          self.pos = pos_start
           return false
         end
 
-        value_end = @scanner.pos
-        unless @scanner.skip(/[ \t]*\n/)
-          @scanner.pos = pos
+        value_end = pos
+        unless skip(/[ \t]*\n/)
+          self.pos = pos_start
           return false
         end
 
         # Check that the next line is not a continuation (indented deeper
         # than the current mapping level) or a block scalar/sequence.
-        next_pos = @scanner.pos
+        next_pos = pos
         if next_pos < @string.bytesize
           next_indent = 0
           next_indent += 1 while @string.getbyte(next_pos + next_indent) == 0x20
           next_byte = @string.getbyte(next_pos + next_indent)
 
           if next_indent > n && next_byte != nil && next_byte != 0x0A
-            @scanner.pos = pos
+            self.pos = pos_start
             return false
           end
         end
 
-        emit_fast_scalar(pos, pos + key_len)
+        emit_fast_scalar(pos_start, pos_start + key_len)
         emit_fast_scalar(value_start, value_end)
 
         # Consume trailing blank/comment lines that the normal parser would
         # handle via parse_s_l_comments in the value's block node path.
         # Quick check: if the next byte can't start a comment or blank line,
         # skip the loop entirely.
-        nb = @string.getbyte(@scanner.pos)
+        nb = @string.getbyte(pos)
         star { parse_l_comment } if nb == 0x0A || nb == 0x20 || nb == 0x09 || nb == 0x23 # \n, space, tab, #
         true
       end
@@ -3864,7 +3861,7 @@ module Psych
       #   c-l-block-map-explicit-entry(n)
       #   | ns-l-block-map-implicit-entry(n)
       def parse_ns_l_block_map_entry(n)
-        (@string.getbyte(@scanner.pos) == 0x3F && parse_c_l_block_map_explicit_entry(n)) || # '?'
+        (@string.getbyte(pos) == 0x3F && parse_c_l_block_map_explicit_entry(n)) || # '?'
           parse_ns_l_block_map_implicit_entry(n)
       end
 
@@ -3893,7 +3890,7 @@ module Psych
       def parse_c_l_block_map_explicit_key(n)
         try do
           match("?") &&
-            peek { @scanner.eos? || parse_s_white || parse_b_break } &&
+            peek_ahead { eos? || parse_s_white || parse_b_break } &&
             parse_s_l_block_indented(n, :block_out)
         end
       end
@@ -3917,16 +3914,16 @@ module Psych
       #   | e-node )
       #   c-l-block-map-implicit-value(n)
       def parse_ns_l_block_map_implicit_entry(n)
-        pos_start = @scanner.pos
+        pos_start = pos
 
         # The key is speculative — cache it in case the entry fails
         # (e.g., ':' is not found after the key).
         events_cache_push
 
         unless (parse_ns_s_block_map_implicit_key || parse_e_node) &&
-               @string.getbyte(@scanner.pos) == 0x3A # :
+               @string.getbyte(pos) == 0x3A # :
           events_cache_discard
-          @scanner.pos = pos_start
+          self.pos = pos_start
           return false
         end
 
@@ -3942,7 +3939,7 @@ module Psych
       #   c-s-implicit-json-key(block-key)
       #   | ns-s-implicit-yaml-key(block-key)
       def parse_ns_s_block_map_implicit_key
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x5B, 0x7B, 0x27, 0x22 # [ { ' " — must be JSON key
           parse_c_s_implicit_json_key(:block_key)
         when 0x21, 0x26 # ! & — could be either (properties before JSON or YAML content)
@@ -3959,9 +3956,9 @@ module Psych
       #   s-l+block-node(n,block-out)
       #   | ( e-node s-l-comments ) )
       def parse_c_l_block_map_implicit_value(n)
-        return false unless @string.getbyte(@scanner.pos) == 0x3A # :
+        return false unless @string.getbyte(pos) == 0x3A # :
         try do
-          @scanner.skip(":") &&
+          skip(":") &&
             (parse_s_l_block_node(n, :block_out) || try { parse_e_node && parse_s_l_comments })
         end
       end
@@ -3973,13 +3970,13 @@ module Psych
       def parse_ns_l_compact_mapping(n)
         # Cache the MappingStart + first entry speculatively.
         events_cache_push
-        events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::BLOCK))
+        events_push_flush_properties(MappingStart.new(@source, pos, Nodes::Mapping::BLOCK))
 
         if try { parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n) }
           # First entry succeeded — flush and continue without outer cache.
           events_cache_flush
           star { try { parse_s_indent(n) && (parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n)) } }
-          events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
+          events_push_flush_properties(MappingEnd.new(@source, pos))
           true
         else
           events_cache_discard
@@ -4015,7 +4012,7 @@ module Psych
         try do
           if parse_s_separate(n + 1, c)
             try { parse_c_ns_properties(n + 1, c) && parse_s_separate(n + 1, c) }
-            case @string.getbyte(@scanner.pos)
+            case @string.getbyte(pos)
             when 0x7C then parse_c_l_literal(n)  # |
             when 0x3E then parse_c_l_folded(n)   # >
             end
@@ -4073,7 +4070,7 @@ module Psych
       #   c-byte-order-mark? l-comment*
       def parse_l_document_prefix
         try do
-          @scanner.skip("\u{FEFF}")
+          skip("\u{FEFF}")
           star { parse_l_comment }
         end
       end
@@ -4082,7 +4079,7 @@ module Psych
       # c-directives-end ::=
       #   '-' '-' '-'
       def parse_c_directives_end
-        if try { match("---") && peek { @scanner.eos? || parse_s_white || parse_b_break } }
+        if try { match("---") && peek_ahead { eos? || parse_s_white || parse_b_break } }
           document_end_event_flush
           @document_start_event.implicit = false
           true
@@ -4119,7 +4116,7 @@ module Psych
 
         result =
           try do
-            !try { start_of_line? && (parse_c_directives_end || parse_c_document_end) && (match(/[\u{0A}\u{0D}]/) || parse_s_white || @scanner.eos?) } &&
+            !try { start_of_line? && (parse_c_directives_end || parse_c_document_end) && (match(/[\u{0A}\u{0D}]/) || parse_s_white || eos?) } &&
               parse_s_l_block_node(-1, :block_in)
           end
 
@@ -4151,7 +4148,7 @@ module Psych
       #   | l-explicit-document
       #   | l-bare-document
       def parse_l_any_document
-        case @string.getbyte(@scanner.pos)
+        case @string.getbyte(pos)
         when 0x25 # % — directive document
           try { plus { parse_l_directive } && parse_l_explicit_document } ||
             parse_l_explicit_document ||
@@ -4171,10 +4168,10 @@ module Psych
       #   l-any-document? )
       #   | ( l-document-prefix* l-explicit-document? ) )*
       def parse_l_yaml_stream
-        events_push_flush_properties(StreamStart.new(@source, @scanner.pos))
+        events_push_flush_properties(StreamStart.new(@source, pos))
 
         star { parse_l_document_prefix }
-        @document_start_event = DocumentStart.new(@source, @scanner.pos)
+        @document_start_event = DocumentStart.new(@source, pos)
         @tag_directives = @document_start_event.tag_directives
         @document_end_event = nil
         parse_l_any_document
@@ -4195,9 +4192,9 @@ module Psych
           end
         end
 
-        raise_syntax_error("Parser finished before end of input") unless @scanner.eos?
+        raise_syntax_error("Parser finished before end of input") unless eos?
         document_end_event_flush
-        events_push_flush_properties(StreamEnd.new(@source, @scanner.pos))
+        events_push_flush_properties(StreamEnd.new(@source, pos))
         true
       end
 
