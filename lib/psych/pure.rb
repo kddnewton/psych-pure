@@ -1232,72 +1232,6 @@ module Psych
       # A stack of contexts that the parser is currently within. We use this to
       # decorate error messages with the context in which they occurred.
       class Context
-        class BlockMapping
-          attr_reader :pos, :indent
-
-          def initialize(pos, indent)
-            @pos = pos
-            @indent = indent
-          end
-
-          def format(source)
-            "block mapping at #{source.point(pos)}#{indent == -1 ? "" : " (indent=#{indent})"}"
-          end
-        end
-
-        class BlockSequence
-          attr_reader :pos, :indent
-
-          def initialize(pos, indent)
-            @pos = pos
-            @indent = indent
-          end
-
-          def format(source)
-            "block sequence at #{source.point(pos)}#{indent == -1 ? "" : " (indent=#{indent})"}"
-          end
-        end
-
-        class DoubleQuotedScalar
-          attr_reader :pos
-
-          def initialize(pos)
-            @pos = pos
-          end
-
-          def format(source)
-            "double quoted scalar at #{source.point(pos)}"
-          end
-        end
-
-        class FlowMapping
-          attr_reader :pos, :context
-
-          def initialize(pos, context)
-            @pos = pos
-            @context = context
-          end
-
-          def format(source)
-            "flow mapping at #{source.point(pos)} (context=#{context})"
-          end
-        end
-
-        class FlowSequence
-          attr_reader :pos, :context
-
-          def initialize(pos, context)
-            @pos = pos
-            @context = context
-          end
-
-          def format(source)
-            "flow sequence at #{source.point(pos)} (context=#{context})"
-          end
-        end
-
-        private_constant :BlockMapping, :BlockSequence, :DoubleQuotedScalar, :FlowMapping, :FlowSequence
-
         def initialize
           @contexts = []
           @deepest = nil
@@ -1307,48 +1241,87 @@ module Psych
         def syntax_error(source, filename, pos, message)
           stack = @contexts.empty? ? @deepest : @contexts
           if stack && !stack.empty?
-            pos = stack.last.pos
-            message = "#{message}\nwithin:\n#{stack.map { |element| " #{element.format(source)}\n" }.join}"
+            pos = stack[-2]
+            message = "#{message}\nwithin:\n"
+            idx = 0
+            while idx < stack.size
+              message << " #{format_entry(source, stack[idx], stack[idx + 1], stack[idx + 2])}\n"
+              idx += 3 # each entry uses 3 array slots [type, pos, extra]
+            end
           end
 
           SyntaxError.new(filename, source.line(pos), source.column(pos), pos, message, nil)
         end
 
-        def within_block_mapping(pos, indent, &blk)
-          within(BlockMapping.new(pos, indent), &blk)
+        def within_block_mapping(pos, indent, &block)
+          within(:block_mapping, pos, indent, &block)
         end
 
-        def within_block_sequence(pos, indent, &blk)
-          within(BlockSequence.new(pos, indent), &blk)
+        def within_block_sequence(pos, indent, &block)
+          within(:block_sequence, pos, indent, &block)
         end
 
-        def within_double_quoted_scalar(pos, &blk)
-          within(DoubleQuotedScalar.new(pos), &blk)
+        def within_double_quoted_scalar(pos, &block)
+          within(:double_quoted_scalar, pos, nil, &block)
         end
 
-        def within_flow_mapping(pos, context, &blk)
-          within(FlowMapping.new(pos, context), &blk)
+        def within_flow_mapping(pos, context, &block)
+          within(:flow_mapping, pos, context, &block)
         end
 
-        def within_flow_sequence(pos, context, &blk)
-          within(FlowSequence.new(pos, context), &blk)
+        def within_flow_sequence(pos, context, &block)
+          within(:flow_sequence, pos, context, &block)
         end
 
         private
 
-        def within(object)
-          contexts = @contexts
-          contexts.push(object)
-
-          if (new_deepest = ((depth = contexts.length) > @deepest_depth))
-            @deepest_depth = depth
-          end
-
+        def within(type, pos, extra)
+          push_context(type, pos, extra)
           begin
             yield
           ensure
-            @deepest = contexts.dup if new_deepest
-            contexts.pop
+            pop_context
+          end
+        end
+
+        # Push a context entry onto the stack. Each entry is stored as three
+        # consecutive elements [type, pos, extra] in a flat array to avoid
+        # allocating an object per context frame.
+        def push_context(type, pos, extra)
+          contexts = @contexts
+          contexts.push(type, pos, extra)
+
+          if (new_depth = contexts.length) > @deepest_depth
+            @deepest_depth = new_depth
+            @deepest = nil
+          end
+        end
+
+        # Pop a context entry from the stack. Before popping, snapshot the
+        # stack if this is the deepest point we've reached — this preserves
+        # context for error messages even after unwinding.
+        def pop_context
+          contexts = @contexts
+          if !@deepest && contexts.length <= @deepest_depth
+            @deepest = contexts.dup
+          end
+          contexts.pop
+          contexts.pop
+          contexts.pop
+        end
+
+        def format_entry(source, type, pos, extra)
+          case type
+          when :block_mapping
+            "block mapping at #{source.point(pos)}#{extra == -1 ? "" : " (indent=#{extra})"}"
+          when :block_sequence
+            "block sequence at #{source.point(pos)}#{extra == -1 ? "" : " (indent=#{extra})"}"
+          when :double_quoted_scalar
+            "double quoted scalar at #{source.point(pos)}"
+          when :flow_mapping
+            "flow mapping at #{source.point(pos)} (context=#{extra})"
+          when :flow_sequence
+            "flow sequence at #{source.point(pos)} (context=#{extra})"
           end
         end
       end
