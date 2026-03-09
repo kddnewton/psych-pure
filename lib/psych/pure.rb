@@ -3044,9 +3044,14 @@ module Psych
       #   | c-ns-flow-map-empty-key-entry(n,c)
       #   | c-ns-flow-pair-json-key-entry(n,c)
       def parse_ns_flow_pair_entry(n, c)
-        parse_ns_flow_pair_yaml_key_entry(n, c) ||
-          parse_c_ns_flow_map_empty_key_entry(n, c) ||
+        case @string.getbyte(@scanner.pos)
+        when 0x3A # : — empty key
+          parse_c_ns_flow_map_empty_key_entry(n, c)
+        when 0x5B, 0x7B, 0x27, 0x22 # [ { ' " — JSON key
           parse_c_ns_flow_pair_json_key_entry(n, c)
+        else
+          parse_ns_flow_pair_yaml_key_entry(n, c)
+        end
       end
 
       # [152]
@@ -3155,8 +3160,13 @@ module Psych
       # ns-flow-content(n,c) ::=
       #   ns-flow-yaml-content(n,c) | c-flow-json-content(n,c)
       def parse_ns_flow_content(n, c)
-        parse_ns_flow_yaml_content(n, c) ||
-          parse_c_flow_json_content(n, c)
+        case @string.getbyte(@scanner.pos)
+        when 0x5B then parse_c_flow_sequence(n, c)  # [
+        when 0x7B then parse_c_flow_mapping(n, c)   # {
+        when 0x27 then parse_c_single_quoted(n, c)  # '
+        when 0x22 then parse_c_double_quoted(n, c)  # "
+        else parse_ns_flow_yaml_content(n, c)
+        end
       end
 
       # [159]
@@ -3718,7 +3728,11 @@ module Psych
 
         try do
           parse_s_indent(m) &&
-            (parse_ns_l_compact_sequence(n + 1 + m) || parse_ns_l_compact_mapping(n + 1 + m))
+            if @string.getbyte(@scanner.pos) == 0x2D # -
+              parse_ns_l_compact_sequence(n + 1 + m) || parse_ns_l_compact_mapping(n + 1 + m)
+            else
+              parse_ns_l_compact_mapping(n + 1 + m)
+            end
         end || parse_s_l_block_node(n, c) || try { parse_e_node && parse_s_l_comments }
       end
 
@@ -3958,7 +3972,7 @@ module Psych
       # s-l+block-node(n,c) ::=
       #   s-l+block-in-block(n,c) | s-l+flow-in-block(n)
       def parse_s_l_block_node(n, c)
-        parse_s_l_block_in_block(n, c) || parse_s_l_flow_in_block(n)
+        parse_s_l_block_scalar(n, c) || parse_s_l_block_collection(n, c) || parse_s_l_flow_in_block(n)
       end
 
       # [197]
@@ -3973,13 +3987,6 @@ module Psych
         end
       end
 
-      # [198]
-      # s-l+block-in-block(n,c) ::=
-      #   s-l+block-scalar(n,c) | s-l+block-collection(n,c)
-      def parse_s_l_block_in_block(n, c)
-        parse_s_l_block_scalar(n, c) || parse_s_l_block_collection(n, c)
-      end
-
       # [199]
       # s-l+block-scalar(n,c) ::=
       #   s-separate(n+1,c)
@@ -3989,7 +3996,10 @@ module Psych
         try do
           if parse_s_separate(n + 1, c)
             try { parse_c_ns_properties(n + 1, c) && parse_s_separate(n + 1, c) }
-            parse_c_l_literal(n) || parse_c_l_folded(n)
+            case @string.getbyte(@scanner.pos)
+            when 0x7C then parse_c_l_literal(n)  # |
+            when 0x3E then parse_c_l_folded(n)   # >
+            end
           end
         end
       end
@@ -4122,9 +4132,17 @@ module Psych
       #   | l-explicit-document
       #   | l-bare-document
       def parse_l_any_document
-        try { plus { parse_l_directive } && parse_l_explicit_document } ||
+        case @string.getbyte(@scanner.pos)
+        when 0x25 # % — directive document
+          try { plus { parse_l_directive } && parse_l_explicit_document } ||
+            parse_l_explicit_document ||
+            parse_l_bare_document
+        when 0x2D # - — could be explicit document (---) or bare document
           parse_l_explicit_document ||
+            parse_l_bare_document
+        else
           parse_l_bare_document
+        end
       end
 
       # [211]
