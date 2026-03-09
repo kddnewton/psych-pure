@@ -46,15 +46,11 @@ module Psych
         @last_line_offset = 0
 
         idx = 0
-        bsize = string.bytesize
-        while idx < bsize
-          if string.getbyte(idx) == 0x0A
-            offsets << idx + 1
-          end
-          idx += 1
+        while (found = string.index("\n", idx))
+          offsets << (idx = found + 1)
         end
 
-        offsets << bsize if offsets.last != bsize
+        offsets << string.bytesize if offsets.last != string.bytesize
         @line_offsets = offsets
       end
 
@@ -186,8 +182,8 @@ module Psych
       # Emit an event for this location to the given handler, but trim trailing
       # whitespace and comments first.
       def trimmed_event_location(handler)
-        effective_end = @source.trim(@pos_end)
         sl = @source.line(@pos_start)
+        effective_end = @source.trim(@pos_end)
         el = @source.line(effective_end)
         handler.event_location(sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el))
       end
@@ -1078,16 +1074,14 @@ module Psych
       end
 
       def accept(handler)
+        sl = @source.line(@pos_start)
         effective_end = @source.trim(@pos_end)
         if @pos_start == effective_end
-          l = @source.line(@pos_start)
-          c = @source.column(@pos_start, l)
-          handler.event_location(l, c, l, c)
+          c = @source.column(@pos_start, sl)
+          handler.event_location(sl, c, sl, c)
         else
-          sl = @source.line(@pos_start)
-          sc = @source.column(@pos_start, sl)
           el = @source.line(effective_end)
-          handler.event_location(sl, sc, el, @source.column(effective_end, el))
+          handler.event_location(sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el))
         end
         handler.end_mapping
       end
@@ -1187,16 +1181,14 @@ module Psych
       end
 
       def accept(handler)
+        sl = @source.line(@pos_start)
         effective_end = @source.trim(@pos_end)
         if @pos_start == effective_end
-          l = @source.line(@pos_start)
-          c = @source.column(@pos_start, l)
-          handler.event_location(l, c, l, c)
+          c = @source.column(@pos_start, sl)
+          handler.event_location(sl, c, sl, c)
         else
-          sl = @source.line(@pos_start)
-          sc = @source.column(@pos_start, sl)
           el = @source.line(effective_end)
-          handler.event_location(sl, sc, el, @source.column(effective_end, el))
+          handler.event_location(sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el))
         end
         handler.end_sequence
       end
@@ -1554,8 +1546,8 @@ module Psych
       # string, or the previous character was a newline.
       def start_of_line?
         (p = pos) == 0 ||
-          eos? ||
-          (@string.getbyte(p - 1) == 0x0A)
+          @string.getbyte(p - 1) == 0x0A ||
+          eos?
       end
 
       # This is our main backtracking mechanism. It attempts to parse forward
