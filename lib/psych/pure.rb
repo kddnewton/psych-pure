@@ -2301,7 +2301,7 @@ module Psych
         pos_start = @scanner.pos
 
         @context.within_double_quoted_scalar(@scanner.pos) do
-          if try { match("\"") && parse_nb_double_text(n, c) && match("\"") }
+          if try { @scanner.skip("\"") && parse_nb_double_text(n, c) && @scanner.skip("\"") }
             source = from(pos_start)
             value = source.byteslice(1...-1)
             value.gsub!(C_DOUBLE_QUOTED_GSUB) do |m|
@@ -2333,7 +2333,7 @@ module Psych
       def parse_nb_double_text(n, c)
         case c
         when :block_key, :flow_key
-          match(/(?:[^\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/)
+          @scanner.skip(/(?:[^\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/)
           true
         when :flow_in, :flow_out
           parse_nb_double_multi_line(n)
@@ -2349,8 +2349,8 @@ module Psych
       #   l-empty(n,flow-in)* s-flow-line-prefix(n)
       def parse_s_double_escaped(n)
         try do
-          (match(/[ \t]*/) || true) &&
-            match("\\") &&
+          (@scanner.skip(/[ \t]*/) || true) &&
+            @scanner.skip("\\") &&
             parse_b_non_content &&
             star { parse_l_empty(n, :flow_in) } &&
             parse_s_flow_line_prefix(n)
@@ -2379,9 +2379,9 @@ module Psych
         try do
           if parse_s_double_break(n)
             try do
-              match(/\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}|[\x21\x23-\x5B\x5D-\u{10FFFF}]/) &&
-                (match(/(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/) || true) &&
-                (parse_s_double_next_line(n) || (match(/[ \t]*/) || true))
+              @scanner.skip(/\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}|[\x21\x23-\x5B\x5D-\u{10FFFF}]/) &&
+                (@scanner.skip(/(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/) || true) &&
+                (parse_s_double_next_line(n) || (@scanner.skip(/[ \t]*/) || true))
             end
 
             true
@@ -2395,8 +2395,8 @@ module Psych
       #   ( s-double-next-line(n) | s-white* )
       def parse_nb_double_multi_line(n)
         try do
-          (match(/(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/) || true) &&
-            (parse_s_double_next_line(n) || (match(/[ \t]*/) || true))
+          (@scanner.skip(/(?:[ \t]*(?:[^ \t\\"\n\r]|\\[0abt\tnvfre "\/\\N_LP]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}))*/) || true) &&
+            (parse_s_double_next_line(n) || (@scanner.skip(/[ \t]*/) || true))
         end
       end
 
@@ -2419,7 +2419,7 @@ module Psych
         return unless @string.getbyte(@scanner.pos) == 0x27 # '
         pos_start = @scanner.pos
 
-        if try { match("'") && parse_nb_single_text(n, c) && match("'") }
+        if try { @scanner.skip("'") && parse_nb_single_text(n, c) && @scanner.skip("'") }
           source = from(pos_start)
           value = source.byteslice(1...-1)
           value.gsub!(/[ \t]*(?:\r?\n[ \t]*)+/) { |m| (nl = m.count("\n")) == 1 ? " " : "\n" * (nl - 1) }
@@ -2440,7 +2440,7 @@ module Psych
       def parse_nb_single_text(n, c)
         case c
         when :block_key, :flow_key
-          match(/(?:[^'\n\r]|'')*/)
+          @scanner.skip(/(?:[^'\n\r]|'')*/)
           true
         when :flow_in, :flow_out
           parse_nb_single_multi_line(n)
@@ -2458,9 +2458,9 @@ module Psych
         try do
           if parse_s_flow_folded(n)
             try do
-              match(/''|[\x21-\x26\x28-\u{10FFFF}]/) &&
-                (match(/(?:[ \t]*(?:[^ \t'\n\r]|''))*/) || true) &&
-                (parse_s_single_next_line(n) || (match(/[ \t]*/) || true))
+              @scanner.skip(/''|[\x21-\x26\x28-\u{10FFFF}]/) &&
+                (@scanner.skip(/(?:[ \t]*(?:[^ \t'\n\r]|''))*/) || true) &&
+                (parse_s_single_next_line(n) || (@scanner.skip(/[ \t]*/) || true))
             end
 
             true
@@ -2474,8 +2474,8 @@ module Psych
       #   ( s-single-next-line(n) | s-white* )
       def parse_nb_single_multi_line(n)
         try do
-          (match(/(?:[ \t]*(?:[^ \t'\n\r]|''))*/) || true) &&
-            (parse_s_single_next_line(n) || (match(/[ \t]*/) || true))
+          (@scanner.skip(/(?:[ \t]*(?:[^ \t'\n\r]|''))*/) || true) &&
+            (parse_s_single_next_line(n) || (@scanner.skip(/[ \t]*/) || true))
         end
       end
 
@@ -2558,8 +2558,8 @@ module Psych
       #   ns-plain-char(c) )*
       def parse_nb_ns_plain_in_line(c)
         case c
-        when :flow_out, :block_key then match(/(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])#))*/)
-        when :flow_in, :flow_key then match(/(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/)
+        when :flow_out, :block_key then @scanner.skip(/(?:[ \t]*(?:[^ \t\r\n:#\uFEFF]|:(?=[^ \t\r\n\uFEFF])|(?<=[^ \t\r\n])#))*/)
+        when :flow_in, :flow_key then @scanner.skip(/(?:[ \t]*(?:[^ \t\r\n:#,\[\]{}\uFEFF]|:(?=[^ \t\r\n,\[\]{}\uFEFF])|(?<=[^ \t\r\n])#))*/)
         end
         true
       end
@@ -3961,7 +3961,7 @@ module Psych
       def parse_c_l_block_map_implicit_value(n)
         return false unless @string.getbyte(@scanner.pos) == 0x3A # :
         try do
-          match(":") &&
+          @scanner.skip(":") &&
             (parse_s_l_block_node(n, :block_out) || try { parse_e_node && parse_s_l_comments })
         end
       end
