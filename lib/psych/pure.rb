@@ -2126,18 +2126,20 @@ module Psych
       #   | ( c-ns-anchor-property
       #   ( s-separate(n,c) c-ns-tag-property )? )
       def parse_c_ns_properties(n, c)
-        return unless case @string.getbyte(@scanner.pos); when 0x21, 0x26 then true; end # ! &
-
-        try do
-          if parse_c_ns_tag_property
-            try { parse_s_separate(n, c) && parse_c_ns_anchor_property }
-            true
+        case @string.getbyte(@scanner.pos)
+        when 0x21 # ! — must be tag first
+          try do
+            if parse_c_ns_tag_property
+              try { parse_s_separate(n, c) && parse_c_ns_anchor_property }
+              true
+            end
           end
-        end ||
-        try do
-          if parse_c_ns_anchor_property
-            try { parse_s_separate(n, c) && parse_c_ns_tag_property }
-            true
+        when 0x26 # & — must be anchor first
+          try do
+            if parse_c_ns_anchor_property
+              try { parse_s_separate(n, c) && parse_c_ns_tag_property }
+              true
+            end
           end
         end
       end
@@ -2213,7 +2215,6 @@ module Psych
       #   '*' ns-anchor-name
       def parse_c_ns_alias_node
         return false unless @string.getbyte(@scanner.pos) == 0x2A # '*'
-
         pos_start = @scanner.pos
         if try { match("*") && match(NS_ANCHOR_CHAR_PLUS) }
           events_push_flush_properties(Alias.new(Location.new(@source, pos_start, @scanner.pos), from(pos_start).byteslice(1..)))
@@ -2889,11 +2890,15 @@ module Psych
       #   ns-flow-map-explicit-entry(n,c) )
       #   | ns-flow-map-implicit-entry(n,c)
       def parse_ns_flow_map_entry(n, c)
-        try do
-          match("?") &&
-            peek { @scanner.eos? || parse_s_white || parse_b_break } &&
-            parse_s_separate(n, c) && parse_ns_flow_map_explicit_entry(n, c)
-        end || parse_ns_flow_map_implicit_entry(n, c)
+        if @string.getbyte(@scanner.pos) == 0x3F # ?
+          try do
+            match("?") &&
+              peek { @scanner.eos? || parse_s_white || parse_b_break } &&
+              parse_s_separate(n, c) && parse_ns_flow_map_explicit_entry(n, c)
+          end || parse_ns_flow_map_implicit_entry(n, c)
+        else
+          parse_ns_flow_map_implicit_entry(n, c)
+        end
       end
 
       # [143]
@@ -2912,9 +2917,14 @@ module Psych
       #   | c-ns-flow-map-empty-key-entry(n,c)
       #   | c-ns-flow-map-json-key-entry(n,c)
       def parse_ns_flow_map_implicit_entry(n, c)
-        parse_ns_flow_map_yaml_key_entry(n, c) ||
-          parse_c_ns_flow_map_empty_key_entry(n, c) ||
+        case @string.getbyte(@scanner.pos)
+        when 0x3A # : — must be empty key entry
+          parse_c_ns_flow_map_empty_key_entry(n, c)
+        when 0x5B, 0x7B, 0x27, 0x22 # [ { ' " — must be JSON key
           parse_c_ns_flow_map_json_key_entry(n, c)
+        else # plain scalar, *, !, & — YAML key (: and JSON starts already dispatched)
+          parse_ns_flow_map_yaml_key_entry(n, c)
+        end
       end
 
       # [145]
@@ -3006,14 +3016,19 @@ module Psych
         events_cache_push
         events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::FLOW))
 
-        if begin
-          try do
-            match("?") &&
-              peek { @scanner.eos? || parse_s_white || parse_b_break } &&
-              parse_s_separate(n, c) &&
-              parse_ns_flow_map_explicit_entry(n, c)
-          end || parse_ns_flow_pair_entry(n, c)
-        end then
+        matched =
+          if @string.getbyte(@scanner.pos) == 0x3F # ?
+            try do
+              match("?") &&
+                peek { @scanner.eos? || parse_s_white || parse_b_break } &&
+                parse_s_separate(n, c) &&
+                parse_ns_flow_map_explicit_entry(n, c)
+            end || parse_ns_flow_pair_entry(n, c)
+          else
+            parse_ns_flow_pair_entry(n, c)
+          end
+
+        if matched
           events_cache_flush
           events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
           true
@@ -3128,12 +3143,12 @@ module Psych
       #   c-flow-sequence(n,c) | c-flow-mapping(n,c)
       #   | c-single-quoted(n,c) | c-double-quoted(n,c)
       def parse_c_flow_json_content(n, c)
-        return unless case @string.getbyte(@scanner.pos); when 0x5B, 0x7B, 0x27, 0x22 then true; end # [ { ' "
-
-        parse_c_flow_sequence(n, c) ||
-          parse_c_flow_mapping(n, c) ||
-          parse_c_single_quoted(n, c) ||
-          parse_c_double_quoted(n, c)
+        case @string.getbyte(@scanner.pos)
+        when 0x5B then parse_c_flow_sequence(n, c)  # [
+        when 0x7B then parse_c_flow_mapping(n, c)   # {
+        when 0x27 then parse_c_single_quoted(n, c)  # '
+        when 0x22 then parse_c_double_quoted(n, c)  # "
+        end
       end
 
       # [158]
@@ -3153,12 +3168,17 @@ module Psych
       #   ns-flow-yaml-content(n,c) )
       #   | e-scalar ) )
       def parse_ns_flow_yaml_node(n, c)
-        parse_c_ns_alias_node ||
-          parse_ns_flow_yaml_content(n, c) ||
+        case @string.getbyte(@scanner.pos)
+        when 0x2A # * — alias
+          parse_c_ns_alias_node
+        when 0x21, 0x26 # ! & — properties, then content or empty
           try do
             parse_c_ns_properties(n, c) &&
               (try { parse_s_separate(n, c) && parse_ns_flow_content(n, c) } || parse_e_scalar)
           end
+        else
+          parse_ns_flow_yaml_content(n, c)
+        end
       end
 
       # [160]
@@ -3182,12 +3202,17 @@ module Psych
       #   ns-flow-content(n,c) )
       #   | e-scalar ) )
       def parse_ns_flow_node(n, c)
-        parse_c_ns_alias_node ||
-          parse_ns_flow_content(n, c) ||
+        case @string.getbyte(@scanner.pos)
+        when 0x2A # * — alias
+          parse_c_ns_alias_node
+        when 0x21, 0x26 # ! & — properties first, then optional content
           try do
             parse_c_ns_properties(n, c) &&
               (try { parse_s_separate(n, c) && parse_ns_flow_content(n, c) } || parse_e_scalar)
           end
+        else
+          parse_ns_flow_content(n, c)
+        end
       end
 
       # [162]
@@ -3884,8 +3909,15 @@ module Psych
       #   c-s-implicit-json-key(block-key)
       #   | ns-s-implicit-yaml-key(block-key)
       def parse_ns_s_block_map_implicit_key
-        parse_c_s_implicit_json_key(:block_key) ||
+        case @string.getbyte(@scanner.pos)
+        when 0x5B, 0x7B, 0x27, 0x22 # [ { ' " — must be JSON key
+          parse_c_s_implicit_json_key(:block_key)
+        when 0x21, 0x26 # ! & — could be either (properties before JSON or YAML content)
+          parse_c_s_implicit_json_key(:block_key) ||
+            parse_ns_s_implicit_yaml_key(:block_key)
+        else
           parse_ns_s_implicit_yaml_key(:block_key)
+        end
       end
 
       # [194]
