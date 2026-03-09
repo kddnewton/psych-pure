@@ -1824,10 +1824,12 @@ module Psych
       # [063]
       # s-indent(n) ::=
       #   s-space{n}
-      INDENT_STRINGS = Array.new(100) { |n| " " * n }.freeze
+      INDENT_STRINGS = Hash.new { |_, n| " " * n }
+      (0...100).each { |n| INDENT_STRINGS[n] = " " * n }
+      private_constant :INDENT_STRINGS
 
       def parse_s_indent(n)
-        match(INDENT_STRINGS[n] || " " * n)
+        match(INDENT_STRINGS[n])
       end
 
       # [031]
@@ -3677,7 +3679,18 @@ module Psych
           if try { parse_s_indent(indent) && (parse_fast_seq_entry(indent) || parse_c_l_block_seq_entry(indent)) }
             # First entry succeeded — flush and continue without outer cache.
             events_cache_flush
-            star { try { parse_s_indent(indent) && (parse_fast_seq_entry(indent) || parse_c_l_block_seq_entry(indent)) } }
+
+            indent_str = INDENT_STRINGS[indent]
+            while true
+              pos_before = @scanner.pos
+
+              if (@check_forbidden && @forbidden_content[pos_before]) || !@scanner.skip(indent_str)
+                break
+              elsif !parse_fast_seq_entry(indent) && !parse_c_l_block_seq_entry(indent)
+                @scanner.pos = pos_before
+                break
+              end
+            end
 
             events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos))
             true
@@ -3735,7 +3748,9 @@ module Psych
         end
 
         emit_fast_scalar(value_start, value_end)
-        star { parse_l_comment }
+
+        nb = @string.getbyte(@scanner.pos)
+        star { parse_l_comment } if nb == 0x0A || nb == 0x20 || nb == 0x09 || nb == 0x23 # \n, space, tab, #
         true
       end
 
@@ -3820,7 +3835,22 @@ module Psych
             # cached MappingStart + first entry events, then parse remaining
             # entries without the outer cache so events emit directly.
             events_cache_flush
-            star { try { parse_s_indent(indent) && (parse_fast_mapping_entry(indent) || parse_ns_l_block_map_entry(indent)) } }
+
+            # Inlined star { try { parse_s_indent && (fast || slow) } }
+            # to avoid block allocation overhead in the hot loop.
+            indent_str = INDENT_STRINGS[indent]
+
+            while true
+              pos_before = @scanner.pos
+
+              if (@check_forbidden && @forbidden_content[pos_before]) || !@scanner.skip(indent_str)
+                break
+              elsif !parse_fast_mapping_entry(indent) && !parse_ns_l_block_map_entry(indent)
+                @scanner.pos = pos_before
+                break
+              end
+            end
+
             events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
             true
           else
@@ -3886,7 +3916,10 @@ module Psych
 
         # Consume trailing blank/comment lines that the normal parser would
         # handle via parse_s_l_comments in the value's block node path.
-        star { parse_l_comment }
+        # Quick check: if the next byte can't start a comment or blank line,
+        # skip the loop entirely.
+        nb = @string.getbyte(@scanner.pos)
+        star { parse_l_comment } if nb == 0x0A || nb == 0x20 || nb == 0x09 || nb == 0x23 # \n, space, tab, #
         true
       end
 
