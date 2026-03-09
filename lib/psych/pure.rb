@@ -1128,12 +1128,12 @@ module Psych
 
     # A fast-path scalar for simple plain scalars on a single line with no
     # anchor or tag. Avoids Location allocation and trim/double-line-lookup.
-    class FastScalar # :nodoc:
-      def initialize(source, pos_start, pos_end, value)
+    class FastScalar
+      def initialize(source, string, pos_start, pos_end)
         @source = source
+        @string = string
         @pos_start = pos_start
         @pos_end = pos_end
-        @value = value
       end
 
       def accept(handler)
@@ -1141,8 +1141,11 @@ module Psych
         sc = @source.column(@pos_start, sl)
         ec = @source.column(@pos_end, sl)
         handler.event_location(sl, sc, sl, ec)
-        event = handler.scalar(@value, nil, nil, true, false, Nodes::Scalar::PLAIN)
-        event.source = @value if event.is_a?(Nodes::Scalar)
+
+        value = @string.byteslice(@pos_start, @pos_end - @pos_start)
+        event = handler.scalar(value, nil, nil, true, false, Nodes::Scalar::PLAIN)
+
+        event.source = value if event.is_a?(Nodes::Scalar)
         event
       end
     end
@@ -1305,11 +1308,13 @@ module Psych
 
         def initialize
           @contexts = []
-          @deepest = []
+          @deepest = nil
+          @deepest_depth = 0
         end
 
         def syntax_error(source, filename, pos, message)
-          unless (stack = (@contexts.empty? ? @deepest : @contexts)).empty?
+          stack = @contexts.empty? ? @deepest : @contexts
+          if stack && !stack.empty?
             pos = stack.last.pos
             message = "#{message}\nwithin:\n#{stack.map { |element| " #{element.format(source)}\n" }.join}"
           end
@@ -1342,11 +1347,15 @@ module Psych
         def within(object)
           contexts = @contexts
           contexts.push(object)
-          @deepest = contexts.dup if contexts.length > @deepest.length
+
+          if (new_deepest = ((depth = contexts.length) > @deepest_depth))
+            @deepest_depth = depth
+          end
 
           begin
             yield
           ensure
+            @deepest = contexts.dup if new_deepest
             contexts.pop
           end
         end
@@ -1592,6 +1601,17 @@ module Psych
         @events_cache.slice!(mark..)
       end
 
+      # Get the first event at the current marker level, then discard all
+      # events at this level. Avoids the array allocation of events_cache_pop
+      # when only the first element is needed.
+      def events_cache_pop_first
+        mark = @events_cache_marks.pop or raise InternalException
+        @events_cache_depth -= 1
+        event = @events_cache[mark]
+        @events_cache.pop while @events_cache.size > mark
+        event
+      end
+
       # Discard events added since the last marker.
       def events_cache_discard
         mark = @events_cache_marks.pop or raise InternalException
@@ -1662,6 +1682,23 @@ module Psych
         end
 
         events_push(event)
+      end
+
+      # Emit a plain scalar, either directly to the handler (when not inside
+      # an events cache) or via a FastScalar event object (when cached).
+      def emit_fast_scalar(pos_start, pos_end)
+        if @events_cache_depth > 0
+          @events_cache << FastScalar.new(@source, @string, pos_start, pos_end)
+        else
+          sl = @source.line(pos_start)
+          sc = @source.column(pos_start, sl)
+          ec = @source.column(pos_end, sl)
+          @handler.event_location(sl, sc, sl, ec)
+
+          value = @string.byteslice(pos_start, pos_end - pos_start)
+          event = @handler.scalar(value, nil, nil, true, false, Nodes::Scalar::PLAIN)
+          event.source = value if event.is_a?(Nodes::Scalar)
+        end
       end
 
       # ------------------------------------------------------------------------
@@ -3631,16 +3668,21 @@ module Psych
         return false if (m = detect_indent(n)) == 0
 
         @context.within_block_sequence(@scanner.pos, n) do
+          indent = n + m
+
+          # Cache the SequenceStart + first entry speculatively.
           events_cache_push
           events_push_flush_properties(SequenceStart.new(@source, @scanner.pos, Nodes::Sequence::BLOCK))
 
-          indent = n + m
-          if try { plus { try { parse_s_indent(indent) && (parse_fast_seq_entry(indent) || parse_c_l_block_seq_entry(indent)) } } }
+          if try { parse_s_indent(indent) && (parse_fast_seq_entry(indent) || parse_c_l_block_seq_entry(indent)) }
+            # First entry succeeded — flush and continue without outer cache.
             events_cache_flush
+            star { try { parse_s_indent(indent) && (parse_fast_seq_entry(indent) || parse_c_l_block_seq_entry(indent)) } }
+
             events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos))
             true
           else
-            event = events_cache_pop[0]
+            event = events_cache_pop_first
             @anchor = event.anchor
             @tag = event.tag
             false
@@ -3667,13 +3709,12 @@ module Psych
         return false unless @scanner.skip(FAST_SEQ_DASH)
 
         value_start = @scanner.pos
-        value = @scanner.scan(BLOCK_PLAIN_SCALAR)
-        unless value
+        if !(value_len = @scanner.skip(BLOCK_PLAIN_SCALAR))
           @scanner.pos = pos
           return false
         end
-        value_end = @scanner.pos
 
+        value_end = @scanner.pos
         unless @scanner.skip(FAST_MAPPING_TRAIL)
           @scanner.pos = pos
           return false
@@ -3693,8 +3734,7 @@ module Psych
           end
         end
 
-        events_push(FastScalar.new(@source, value_start, value_end, value))
-
+        emit_fast_scalar(value_start, value_end)
         star { parse_l_comment }
         true
       end
@@ -3743,14 +3783,14 @@ module Psych
       def parse_ns_l_compact_sequence(n)
         return false unless @string.getbyte(@scanner.pos) == 0x2D # '-'
 
+        # Cache the SequenceStart + first entry speculatively.
         events_cache_push
         events_push_flush_properties(SequenceStart.new(@source, @scanner.pos, Nodes::Sequence::BLOCK))
 
-        if try {
-          parse_c_l_block_seq_entry(n) &&
-          star { try { parse_s_indent(n) && parse_c_l_block_seq_entry(n) } }
-        } then
+        if try { parse_c_l_block_seq_entry(n) }
+          # First entry succeeded — flush and continue without outer cache.
           events_cache_flush
+          star { try { parse_s_indent(n) && parse_c_l_block_seq_entry(n) } }
           events_push_flush_properties(SequenceEnd.new(@source, @scanner.pos))
           true
         else
@@ -3768,12 +3808,19 @@ module Psych
         return false if (m = detect_indent(n)) == 0
 
         @context.within_block_mapping(@scanner.pos, n) do
+          indent = n + m
+
+          # Cache the MappingStart + first entry speculatively. If the first
+          # entry fails, we discard everything.
           events_cache_push
           events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::BLOCK))
 
-          indent = n + m
-          if try { plus { try { parse_s_indent(indent) && (parse_fast_mapping_entry(indent) || parse_ns_l_block_map_entry(indent)) } } }
+          if try { parse_s_indent(indent) && (parse_fast_mapping_entry(indent) || parse_ns_l_block_map_entry(indent)) }
+            # First entry succeeded — the mapping is committed. Flush the
+            # cached MappingStart + first entry events, then parse remaining
+            # entries without the outer cache so events emit directly.
             events_cache_flush
+            star { try { parse_s_indent(indent) && (parse_fast_mapping_entry(indent) || parse_ns_l_block_map_entry(indent)) } }
             events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
             true
           else
@@ -3800,8 +3847,8 @@ module Psych
         # Match key, separator, value, and trailing whitespace+newline
         # using separate regexes to avoid capture group allocations.
         pos = @scanner.pos
-        key = @scanner.scan(BLOCK_PLAIN_SCALAR)
-        return false unless key
+        key_len = @scanner.skip(BLOCK_PLAIN_SCALAR)
+        return false unless key_len
 
         unless @scanner.skip(FAST_MAPPING_SEP)
           @scanner.pos = pos
@@ -3809,13 +3856,12 @@ module Psych
         end
 
         value_start = @scanner.pos
-        value = @scanner.scan(BLOCK_PLAIN_SCALAR)
-        unless value
+        if !(value_len = @scanner.skip(BLOCK_PLAIN_SCALAR))
           @scanner.pos = pos
           return false
         end
-        value_end = @scanner.pos
 
+        value_end = @scanner.pos
         unless @scanner.skip(FAST_MAPPING_TRAIL)
           @scanner.pos = pos
           return false
@@ -3835,8 +3881,8 @@ module Psych
           end
         end
 
-        events_push(FastScalar.new(@source, pos, pos + key.bytesize, key))
-        events_push(FastScalar.new(@source, value_start, value_end, value))
+        emit_fast_scalar(pos, pos + key_len)
+        emit_fast_scalar(value_start, value_end)
 
         # Consume trailing blank/comment lines that the normal parser would
         # handle via parse_s_l_comments in the value's block node path.
@@ -3861,16 +3907,14 @@ module Psych
       def parse_c_l_block_map_explicit_entry(n)
         events_cache_push
 
-        if try {
-          parse_c_l_block_map_explicit_key(n) &&
-          (parse_l_block_map_explicit_value(n) || parse_e_node)
-        } then
-          events_cache_flush
-          true
-        else
+        unless try { parse_c_l_block_map_explicit_key(n) }
           events_cache_discard
-          false
+          return false
         end
+
+        # Key succeeded — flush so the value is parsed at a lower depth.
+        events_cache_flush
+        parse_l_block_map_explicit_value(n) || parse_e_node
       end
 
       # [190]
@@ -3904,18 +3948,24 @@ module Psych
       #   | e-node )
       #   c-l-block-map-implicit-value(n)
       def parse_ns_l_block_map_implicit_entry(n)
+        pos_start = @scanner.pos
+
+        # The key is speculative — cache it in case the entry fails
+        # (e.g., ':' is not found after the key).
         events_cache_push
 
-        if try {
-          (parse_ns_s_block_map_implicit_key || parse_e_node) &&
-          parse_c_l_block_map_implicit_value(n)
-        } then
-          events_cache_flush
-          true
-        else
+        unless (parse_ns_s_block_map_implicit_key || parse_e_node) &&
+               @string.getbyte(@scanner.pos) == 0x3A # :
           events_cache_discard
-          false
+          @scanner.pos = pos_start
+          return false
         end
+
+        # Key parsed and ':' confirmed — the entry is committed. Flush
+        # the key events so the value is parsed at a lower cache depth,
+        # enabling direct emission in nested fast paths.
+        events_cache_flush
+        parse_c_l_block_map_implicit_value(n)
       end
 
       # [193]
@@ -3952,14 +4002,14 @@ module Psych
       #   ns-l-block-map-entry(n)
       #   ( s-indent(n) ns-l-block-map-entry(n) )*
       def parse_ns_l_compact_mapping(n)
+        # Cache the MappingStart + first entry speculatively.
         events_cache_push
         events_push_flush_properties(MappingStart.new(@source, @scanner.pos, Nodes::Mapping::BLOCK))
 
-        if try {
-          (parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n)) &&
-          star { try { parse_s_indent(n) && (parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n)) } }
-        } then
+        if try { parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n) }
+          # First entry succeeded — flush and continue without outer cache.
           events_cache_flush
+          star { try { parse_s_indent(n) && (parse_fast_mapping_entry(n) || parse_ns_l_block_map_entry(n)) } }
           events_push_flush_properties(MappingEnd.new(@source, @scanner.pos))
           true
         else
