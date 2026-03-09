@@ -39,6 +39,9 @@ module Psych
     # A source wraps the input string and provides methods to access line and
     # column information from a byte offset.
     class Source
+      # The line index computed by the most recent call to #trim.
+      attr_reader :trim_line
+
       def initialize(string)
         @string = string
         offsets = [0]
@@ -54,6 +57,9 @@ module Psych
         @line_offsets = offsets
       end
 
+      # Trim trailing whitespace-only and comment-only lines from the given
+      # offset. After calling, @trim_line holds the line index of the
+      # returned offset so callers can avoid a redundant line() lookup.
       def trim(offset)
         offsets = @line_offsets
         string = @string
@@ -69,6 +75,7 @@ module Psych
           l -= 1
         end
 
+        @trim_line = l
         offset
       end
 
@@ -184,7 +191,7 @@ module Psych
       def trimmed_event_location(handler)
         sl = @source.line(@pos_start)
         effective_end = @source.trim(@pos_end)
-        el = @source.line(effective_end)
+        el = @source.trim_line
         handler.event_location(sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el))
       end
 
@@ -1080,7 +1087,7 @@ module Psych
           c = @source.column(@pos_start, sl)
           handler.event_location(sl, c, sl, c)
         else
-          el = @source.line(effective_end)
+          el = @source.trim_line
           handler.event_location(sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el))
         end
         handler.end_mapping
@@ -1187,7 +1194,7 @@ module Psych
           c = @source.column(@pos_start, sl)
           handler.event_location(sl, c, sl, c)
         else
-          el = @source.line(effective_end)
+          el = @source.trim_line
           handler.event_location(sl, @source.column(@pos_start, sl), el, @source.column(effective_end, el))
         end
         handler.end_sequence
