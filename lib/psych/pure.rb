@@ -261,6 +261,138 @@ module Psych
       end
     end
 
+    # Wraps a Ruby array with its node from the source input.
+    #
+    # Every Array method falls into one of these buckets:
+    #
+    # * Additive (overridden, no dirty) — <<, push/append, unshift/prepend,
+    #   insert, concat, fill. The relative gaps between existing elements'
+    #   line numbers are still valid, so blank line preservation still works.
+    #
+    # * Replacement (overridden, conditional dirty) — []=. Only sets dirty
+    #   when the array length changes (range-based deletion/insertion), not
+    #   on simple element replacement.
+    #
+    # * Reordering (overridden, always dirty) — sort!, sort_by!, shuffle!,
+    #   reverse!, rotate!. Line numbers become meaningless after reordering.
+    #
+    # * C-level fix (overridden) — compact, compact!. Array#compact uses a
+    #   C-level nil check (NIL_P) that doesn't see through the delegator.
+    #
+    # * Removal (method_missing, dirty via dup+eql?) — delete, delete_at,
+    #   pop, shift, reject!, select!, slice!, clear, replace, uniq!,
+    #   flatten!, delete_if, keep_if. These fall through to LoadedObject's
+    #   method_missing which sets dirty when the array actually changes.
+    #
+    # * Non-bang variants (return plain Array) — select, reject, map, sort,
+    #   reverse, uniq, flatten, compact, +, -, &, |, etc. These return a
+    #   new Array without array-level metadata, but the elements are shared
+    #   references that still carry their comments.
+    #
+    # * Read-only (delegation, no mutation) — each, [], include?, length,
+    #   first, last, etc. SimpleDelegator handles these automatically.
+    class LoadedArray < LoadedObject
+      # Additive — no dirty
+
+      def <<(element)
+        __getobj__ << element
+        self
+      end
+
+      def push(*elements)
+        __getobj__.push(*elements)
+        self
+      end
+
+      alias append push
+
+      def unshift(*elements)
+        __getobj__.unshift(*elements)
+        self
+      end
+
+      alias prepend unshift
+
+      def insert(index, *elements)
+        __getobj__.insert(index, *elements)
+        self
+      end
+
+      def concat(*arrays)
+        __getobj__.concat(*arrays)
+        self
+      end
+
+      def fill(*args, &block)
+        __getobj__.fill(*args, &block)
+        self
+      end
+
+      # Replacement — conditional dirty
+
+      def []=(index, *args)
+        target = __getobj__
+        previous = target.length
+        result = target.[]=(index, *args)
+        @dirty = true if target.length != previous
+        result
+      end
+
+      # Reordering — always dirty
+
+      def sort!(&block)
+        __getobj__.sort!(&block)
+        @dirty = true
+        self
+      end
+
+      def sort_by!(&block)
+        __getobj__.sort_by!(&block)
+        @dirty = true
+        self
+      end
+
+      def shuffle!(**kwargs)
+        __getobj__.shuffle!(**kwargs)
+        @dirty = true
+        self
+      end
+
+      def reverse!
+        __getobj__.reverse!
+        @dirty = true
+        self
+      end
+
+      def rotate!(count = 1)
+        __getobj__.rotate!(count)
+        @dirty = true
+        self
+      end
+
+      # C-level fix — Array#compact uses NIL_P which doesn't see through
+      # the delegator, so we implement nil detection manually.
+
+      def compact
+        __getobj__.reject { |element| nil_element?(element) }
+      end
+
+      def compact!
+        target = __getobj__
+        previous = target.length
+        target.reject! { |element| nil_element?(element) }
+        changed = target.length != previous
+        @dirty = true if changed
+        changed ? self : nil
+      end
+
+      private
+
+      def nil_element?(element)
+        element.nil? || (element.is_a?(LoadedObject) && element.__getobj__.nil?)
+      end
+    end
+
     # Wraps a Ruby hash with its node from the source input.
     class LoadedHash < SimpleDelegator
       class PsychKey
@@ -541,312 +673,6 @@ module Psych
       end
     end
 
-    # Wraps a Ruby array with its node from the source input.
-    # Similar to LoadedHash, this tracks element nodes to preserve comments
-    # and handle deletions properly.
-    class LoadedArray < SimpleDelegator
-      # The node associated with the array.
-      attr_reader :psych_node
-
-      # The list of element nodes within the array.
-      attr_reader :psych_elements
-
-      # Whether the array has been mutated (elements deleted).
-      # When dirty, blank line preservation is skipped during dump.
-      attr_reader :dirty
-
-      def initialize(object, psych_node)
-        super(object)
-        @psych_node = psych_node
-        @psych_elements = []
-        @dirty = false
-      end
-
-      def set!(element_node)
-        @psych_elements << element_node
-        __getobj__ << element_node
-      end
-
-      # Override Array mutation methods to keep @psych_elements in sync.
-
-      def initialize_clone(obj, freeze: nil)
-        super
-        @psych_elements = obj.psych_elements.dup
-      end
-
-      def initialize_dup(obj)
-        super
-        @psych_elements = obj.psych_elements.dup
-      end
-
-      def <<(element)
-        super
-        @psych_elements << element
-        self
-      end
-
-      alias push <<
-
-      def append(*elements)
-        elements.each { |e| self << e }
-        self
-      end
-
-      def clear
-        @dirty = true if !empty?
-        super
-        @psych_elements.clear
-        self
-      end
-
-      def compact!
-        # Can't use super because underlying array contains LoadedObjects, not raw values.
-        # Array#compact! sees LoadedObject(nil) which is truthy, not nil.
-        mutated = false
-        indices_to_remove = []
-        @psych_elements.each_with_index do |element, i|
-          if psych_unwrap(element).nil?
-            indices_to_remove << i
-            mutated = true
-          end
-        end
-        # Remove in reverse order to preserve indices
-        indices_to_remove.reverse_each do |i|
-          @psych_elements.delete_at(i)
-          __getobj__.delete_at(i)
-        end
-        @dirty = true if mutated
-        self if mutated
-      end
-
-      def compact
-        dup.tap(&:compact!)
-      end
-
-      def delete(obj)
-        result = super
-        if result
-          psych_delete_element(obj)
-          @dirty = true
-        end
-        result
-      end
-
-      def delete_at(index)
-        return nil if index < -length || index >= length
-        result = super
-        @psych_elements.delete_at(index < 0 ? length + 1 + index : index)
-        @dirty = true
-        result
-      end
-
-      def delete_if(&block)
-        original_length = length
-        super do |element|
-          yield(psych_unwrap(element)).tap do |result|
-            psych_delete_element(element) if result
-          end
-        end
-        @dirty = true if length != original_length
-        self
-      end
-
-      def reject!(&block)
-        mutated = false
-        super do |element|
-          yield(psych_unwrap(element)).tap do |result|
-            if result
-              psych_delete_element(element)
-              mutated = true
-            end
-          end
-        end
-        @dirty = true if mutated
-        self if mutated
-      end
-
-      def reject(&block)
-        dup.reject!(&block)
-      end
-
-      def keep_if(&block)
-        original_length = length
-        super do |element|
-          yield(psych_unwrap(element)).tap do |result|
-            psych_delete_element(element) if !result
-          end
-        end
-        @dirty = true if length != original_length
-        self
-      end
-
-      alias select! keep_if
-
-      def filter!(&block)
-        mutated = false
-        super do |element|
-          yield(psych_unwrap(element)).tap do |result|
-            if !result
-              psych_delete_element(element)
-              mutated = true
-            end
-          end
-        end
-        @dirty = true if mutated
-        self if mutated
-      end
-
-      def filter(&block)
-        dup.filter!(&block)
-      end
-
-      def pop(n = nil)
-        if n
-          @dirty = true if n > 0 && !empty?
-          result = super(n)
-          n.times { @psych_elements.pop }
-          result
-        else
-          @dirty = true if !empty?
-          result = super()
-          @psych_elements.pop
-          result
-        end
-      end
-
-      def shift(n = nil)
-        if n
-          @dirty = true if n > 0 && !empty?
-          result = super(n)
-          n.times { @psych_elements.shift }
-          result
-        else
-          @dirty = true if !empty?
-          result = super()
-          @psych_elements.shift
-          result
-        end
-      end
-
-      def slice!(*args)
-        original_length = length
-        result = super
-        @psych_elements.slice!(*args)
-        @dirty = true if length != original_length
-        result
-      end
-
-      def uniq!(&block)
-        seen = {}
-        mutated = false
-        @psych_elements.reject! do |element|
-          key = block_given? ? yield(psych_unwrap(element)) : psych_unwrap(element)
-          if seen.key?(key)
-            mutated = true
-            true
-          else
-            seen[key] = true
-            false
-          end
-        end
-        @dirty = true if mutated
-        super
-        self if mutated
-      end
-
-      def uniq(&block)
-        dup.uniq!(&block)
-      end
-
-      def replace(other)
-        super
-        @psych_elements.replace(other.is_a?(LoadedArray) ? other.psych_elements : other.to_a)
-        self
-      end
-
-      def sort!(&block)
-        # Create a mapping of unwrapped values to their psych_elements
-        indices = __getobj__.each_with_index.to_h { |v, i| [v.object_id, i] }
-        super(&block)
-        # Reorder psych_elements to match new order
-        new_elements = __getobj__.map do |v|
-          old_idx = indices[v.object_id]
-          old_idx ? @psych_elements[old_idx] : v
-        end
-        @psych_elements.replace(new_elements)
-        self
-      end
-
-      def sort(&block)
-        dup.sort!(&block)
-      end
-
-      def sort_by!(&block)
-        indices = __getobj__.each_with_index.to_h { |v, i| [v.object_id, i] }
-        super(&block)
-        new_elements = __getobj__.map do |v|
-          old_idx = indices[v.object_id]
-          old_idx ? @psych_elements[old_idx] : v
-        end
-        @psych_elements.replace(new_elements)
-        self
-      end
-
-      def sort_by(&block)
-        dup.sort_by!(&block)
-      end
-
-      def reverse!
-        super
-        @psych_elements.reverse!
-        self
-      end
-
-      def reverse
-        dup.reverse!
-      end
-
-      def rotate!(count = 1)
-        super
-        @psych_elements.rotate!(count)
-        self
-      end
-
-      def rotate(count = 1)
-        dup.rotate!(count)
-      end
-
-      def shuffle!(*args)
-        # Can't preserve element order when shuffling randomly
-        # Mark as dirty by clearing psych_elements and repopulating
-        result = super
-        @psych_elements.replace(__getobj__.to_a)
-        result
-      end
-
-      def shuffle(*args)
-        dup.shuffle!(*args)
-      end
-
-      private
-
-      def psych_compare?(psych_node, value)
-        psych_unwrap(psych_node).eql?(psych_unwrap(value))
-      end
-
-      def psych_delete_element(value)
-        @psych_elements.reject! { |element| psych_compare?(element, value) }
-      end
-
-      def psych_unwrap(node)
-        if node.is_a?(LoadedHash) || node.is_a?(LoadedObject) || node.is_a?(LoadedArray)
-          node.__getobj__
-        else
-          node
-        end
-      end
-    end
-
     # This module contains all of the extensions to Psych that we need in order
     # to support parsing comments.
     module CommentExtensions
@@ -1018,10 +844,15 @@ module Psych
 
           if @comments
             case result
-            when LoadedObject, LoadedHash, LoadedArray
+            when LoadedObject, LoadedHash
               # skip
             else
-              result = LoadedObject.new(result, node)
+              result =
+                if result.is_a?(Array)
+                  LoadedArray.new(result, node)
+                else
+                  LoadedObject.new(result, node)
+                end
             end
           end
 
@@ -1077,38 +908,6 @@ module Psych
 
               revived.set!(key, value)
             end
-          end
-
-          revived
-        end
-
-        def visit_Psych_Nodes_Sequence(node)
-          return super unless @comments
-
-          # Handle tagged sequences with the default behavior
-          if node.tag && @load_tags[node.tag]
-            return super
-          end
-
-          case node.tag
-          when nil
-            revive_sequence(node)
-          when '!omap', 'tag:yaml.org,2002:omap'
-            super
-          when '!set', 'tag:yaml.org,2002:set'
-            super
-          else
-            super
-          end
-        end
-
-        def revive_sequence(node)
-          revived = LoadedArray.new([], node)
-          @st[node] = revived
-
-          node.children.each do |child_node|
-            element = accept(child_node)
-            revived.set!(element)
           end
 
           revived
@@ -4112,7 +3911,7 @@ module Psych
             if value.empty? || ((psych_node = node.psych_node).is_a?(Nodes::Sequence) && psych_node.style == Nodes::Sequence::FLOW)
               visit_array_contents_flow(node.anchor, node.tag, value)
             else
-              visit_array_contents_block(node.anchor, node.tag, value, dirty: node.dirty)
+              visit_array_contents_block(node.anchor, node.tag, node.dirty, value)
             end
           end
         end
@@ -4150,7 +3949,7 @@ module Psych
         # Visit an OmapNode.
         def visit_omap(node)
           with_comments(node) do |value|
-            visit_array_contents_block(node.anchor, "!!omap", value)
+            visit_array_contents_block(node.anchor, "!!omap", false, value)
           end
         end
 
@@ -4202,8 +4001,7 @@ module Psych
         end
 
         # Visit the elements within an array in the block format.
-        # When dirty is true, skip blank line preservation since elements were deleted.
-        def visit_array_contents_block(anchor, tag, contents, dirty: false)
+        def visit_array_contents_block(anchor, tag, dirty, contents)
           if anchor
             @q.text("&#{anchor}")
             tag ? @q.text(" ") : @q.breakable
@@ -4222,7 +4020,6 @@ module Psych
             if index > 0
               @q.breakable
 
-              # Skip blank line preservation when array has been mutated
               if !dirty && current_line && psych_node
                 start_line = (leading&.first || psych_node).start_line
                 @q.breakable if start_line - current_line >= 2
@@ -4594,9 +4391,6 @@ module Psych
           elsif base_object.is_a?(LoadedHash)
             object = base_object.__getobj__
             psych_node = base_object.psych_node
-          elsif base_object.is_a?(LoadedArray)
-            object = base_object.__getobj__
-            psych_node = base_object.psych_node
           end
 
           if @object_nodes.key?(object)
@@ -4615,16 +4409,9 @@ module Psych
             when Psych::Set
               @object_nodes[object] = SetNode.new(object.flat_map { |key, value| [dump(key), dump(value)] }, psych_node)
             when Array
-              contents =
-                if base_object.is_a?(LoadedArray)
-                  base_object.psych_elements.map { |element| dump(element) }
-                else
-                  object.map { |element| dump(element) }
-                end
-
-              dumped = ArrayNode.new(contents, psych_node)
+              dumped = ArrayNode.new(object.map { |element| dump(element) }, psych_node)
               dumped.tag = dump_tag(psych_node&.tag)
-              dumped.dirty = base_object.dirty if base_object.is_a?(LoadedArray)
+              dumped.dirty = true if dirty
 
               @object_nodes[object] = dumped
             when Hash

@@ -1,19 +1,15 @@
 # frozen_string_literal: true
 
 require "test_helper"
-require "yaml"
 
 module Psych
   module Pure
-    # Tests for LoadedArray mutation methods
+    # Tests for array mutation methods with comment preservation.
     #
-    # LoadedArray wraps a regular Array and tracks elements with their comment metadata
-    # in @psych_elements. When dumping, psych-pure uses @psych_elements (not the Array elements)
-    # to preserve comments.
-    #
-    # The bug: Array mutation methods (delete, reject!, etc.) were not updating @psych_elements,
-    # causing deleted elements to reappear in the dump output, or worse, leaving blank lines
-    # where deleted elements used to be.
+    # Arrays loaded with comments: true are wrapped in LoadedArray, which
+    # tracks mutations via a dirty flag. When dirty, blank line preservation
+    # is skipped during dump to avoid spurious blank lines from deleted
+    # elements.
     class LoadedArrayTest < Minitest::Test
       def test_class
         yaml = <<~YAML
