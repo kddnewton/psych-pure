@@ -192,6 +192,17 @@ module Psych
         @trailing << comment
       end
 
+      def initialize_dup(other)
+        super
+        @leading = other.leading.dup
+        @trailing = other.trailing.dup
+      end
+
+      def merge(other)
+        @leading.concat(other.leading)
+        @trailing.concat(other.trailing)
+      end
+
       # Execute the given block without the leading comments being visible. This
       # is used when a node has already handled its child nodes' leading
       # comments, so they should not be processed again.
@@ -299,11 +310,13 @@ module Psych
 
       def initialize_clone(obj, freeze: nil)
         super
+        @psych_node = obj.psych_node.dup
         @psych_keys = obj.psych_keys.map(&:dup)
       end
 
       def initialize_dup(obj)
         super
+        @psych_node = obj.psych_node.dup
         @psych_keys = obj.psych_keys.map(&:dup)
       end
 
@@ -404,9 +417,23 @@ module Psych
       def merge!(*others)
         super
         others.each do |other|
-          other.each do |key, value|
-            psych_delete(key)
-            @psych_keys << PsychKey.new(key, value)
+          if other.is_a?(LoadedHash)
+            # When merging another LoadedHash, preserve its psych_keys to keep comments
+            other.psych_keys.each do |psych_key|
+              psych_delete(psych_unwrap(psych_key.key_node))
+              @psych_keys << psych_key.dup
+            end
+
+            # Merge comments from the other hash's psych_node
+            if other.psych_node&.comments?
+              @psych_node.comments.merge(other.psych_node.comments)
+            end
+          else
+            # Regular hash - just wrap keys and values
+            other.each do |key, value|
+              psych_delete(key)
+              @psych_keys << PsychKey.new(key, value)
+            end
           end
         end
 
@@ -654,6 +681,11 @@ module Psych
 
         def comments
           @comments ||= Comments.new
+        end
+
+        def initialize_dup(other)
+          super
+          @comments = other.comments.dup if other.comments?
         end
 
         def comments?
