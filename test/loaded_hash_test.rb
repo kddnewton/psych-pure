@@ -383,6 +383,48 @@ module Psych
         assert_includes output, "a: 1"
         assert_includes output, "b: 2"
       end
+
+      def test_merge_does_not_mutate_original_comments
+        yaml1 = <<~YAML
+          # first
+          a: 1
+        YAML
+
+        yaml2 = <<~YAML
+          # second
+          b: 2
+        YAML
+
+        content1 = Psych::Pure.load(yaml1, comments: true)
+        content2 = Psych::Pure.load(yaml2, comments: true)
+        content1.merge(content2)
+
+        output = Psych::Pure.dump(content1)
+
+        assert_includes output, "# first"
+        refute_includes output, "# second"
+      end
+
+      def test_merge_bang_preserves_comments_into_commentless_hash
+        yaml1 = <<~YAML
+          a: 1
+        YAML
+
+        yaml2 = <<~YAML
+          # comment
+          b: 2
+        YAML
+
+        content1 = Psych::Pure.load(yaml1, comments: true)
+        content2 = Psych::Pure.load(yaml2, comments: true)
+        content1.merge!(content2)
+
+        output = Psych::Pure.dump(content1)
+
+        assert_includes output, "# comment"
+        assert_includes output, "a: 1"
+        assert_includes output, "b: 2"
+      end
     end
   end
 end

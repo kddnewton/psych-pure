@@ -192,6 +192,17 @@ module Psych
         @trailing << comment
       end
 
+      def initialize_dup(other)
+        super
+        @leading = other.leading.dup
+        @trailing = other.trailing.dup
+      end
+
+      def merge(other)
+        @leading.concat(other.leading)
+        @trailing.concat(other.trailing)
+      end
+
       # Execute the given block without the leading comments being visible. This
       # is used when a node has already handled its child nodes' leading
       # comments, so they should not be processed again.
@@ -299,11 +310,13 @@ module Psych
 
       def initialize_clone(obj, freeze: nil)
         super
+        @psych_node = obj.psych_node.dup
         @psych_keys = obj.psych_keys.map(&:dup)
       end
 
       def initialize_dup(obj)
         super
+        @psych_node = obj.psych_node.dup
         @psych_keys = obj.psych_keys.map(&:dup)
       end
 
@@ -412,10 +425,8 @@ module Psych
             end
 
             # Merge comments from the other hash's psych_node
-            if other.psych_node&.comments? && (other_leading = other.psych_node.comments.leading).any?
-              if @psych_node&.comments?
-                @psych_node.comments.leading.concat(other_leading)
-              end
+            if other.psych_node&.comments?
+              @psych_node.comments.merge(other.psych_node.comments)
             end
           else
             # Regular hash - just wrap keys and values
@@ -670,6 +681,11 @@ module Psych
 
         def comments
           @comments ||= Comments.new
+        end
+
+        def initialize_dup(other)
+          super
+          @comments = other.comments.dup if other.comments?
         end
 
         def comments?
