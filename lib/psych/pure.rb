@@ -261,6 +261,138 @@ module Psych
       end
     end
 
+    # Wraps a Ruby array with its node from the source input.
+    #
+    # Every Array method falls into one of these buckets:
+    #
+    # * Additive (overridden, no dirty) — <<, push/append, unshift/prepend,
+    #   insert, concat, fill. The relative gaps between existing elements'
+    #   line numbers are still valid, so blank line preservation still works.
+    #
+    # * Replacement (overridden, conditional dirty) — []=. Only sets dirty
+    #   when the array length changes (range-based deletion/insertion), not
+    #   on simple element replacement.
+    #
+    # * Reordering (overridden, always dirty) — sort!, sort_by!, shuffle!,
+    #   reverse!, rotate!. Line numbers become meaningless after reordering.
+    #
+    # * C-level fix (overridden) — compact, compact!. Array#compact uses a
+    #   C-level nil check (NIL_P) that doesn't see through the delegator.
+    #
+    # * Removal (method_missing, dirty via dup+eql?) — delete, delete_at,
+    #   pop, shift, reject!, select!, slice!, clear, replace, uniq!,
+    #   flatten!, delete_if, keep_if. These fall through to LoadedObject's
+    #   method_missing which sets dirty when the array actually changes.
+    #
+    # * Non-bang variants (return plain Array) — select, reject, map, sort,
+    #   reverse, uniq, flatten, compact, +, -, &, |, etc. These return a
+    #   new Array without array-level metadata, but the elements are shared
+    #   references that still carry their comments.
+    #
+    # * Read-only (delegation, no mutation) — each, [], include?, length,
+    #   first, last, etc. SimpleDelegator handles these automatically.
+    class LoadedArray < LoadedObject
+      # Additive — no dirty
+
+      def <<(element)
+        __getobj__ << element
+        self
+      end
+
+      def push(*elements)
+        __getobj__.push(*elements)
+        self
+      end
+
+      alias append push
+
+      def unshift(*elements)
+        __getobj__.unshift(*elements)
+        self
+      end
+
+      alias prepend unshift
+
+      def insert(index, *elements)
+        __getobj__.insert(index, *elements)
+        self
+      end
+
+      def concat(*arrays)
+        __getobj__.concat(*arrays)
+        self
+      end
+
+      def fill(*args, &block)
+        __getobj__.fill(*args, &block)
+        self
+      end
+
+      # Replacement — conditional dirty
+
+      def []=(index, *args)
+        target = __getobj__
+        previous = target.length
+        result = target.[]=(index, *args)
+        @dirty = true if target.length != previous
+        result
+      end
+
+      # Reordering — always dirty
+
+      def sort!(&block)
+        __getobj__.sort!(&block)
+        @dirty = true
+        self
+      end
+
+      def sort_by!(&block)
+        __getobj__.sort_by!(&block)
+        @dirty = true
+        self
+      end
+
+      def shuffle!(**kwargs)
+        __getobj__.shuffle!(**kwargs)
+        @dirty = true
+        self
+      end
+
+      def reverse!
+        __getobj__.reverse!
+        @dirty = true
+        self
+      end
+
+      def rotate!(count = 1)
+        __getobj__.rotate!(count)
+        @dirty = true
+        self
+      end
+
+      # C-level fix — Array#compact uses NIL_P which doesn't see through
+      # the delegator, so we implement nil detection manually.
+
+      def compact
+        __getobj__.reject { |element| nil_element?(element) }
+      end
+
+      def compact!
+        target = __getobj__
+        previous = target.length
+        target.reject! { |element| nil_element?(element) }
+        changed = target.length != previous
+        @dirty = true if changed
+        changed ? self : nil
+      end
+
+      private
+
+      def nil_element?(element)
+        element.nil? || (element.is_a?(LoadedObject) && element.__getobj__.nil?)
+      end
+    end
+
     # Wraps a Ruby hash with its node from the source input.
     class LoadedHash < SimpleDelegator
       class PsychKey
@@ -715,7 +847,12 @@ module Psych
             when LoadedObject, LoadedHash
               # skip
             else
-              result = LoadedObject.new(result, node)
+              result =
+                if result.is_a?(Array)
+                  LoadedArray.new(result, node)
+                else
+                  LoadedObject.new(result, node)
+                end
             end
           end
 
@@ -3683,7 +3820,7 @@ module Psych
 
       # Represents an array of nodes.
       class ArrayNode < Node
-        attr_accessor :anchor, :tag
+        attr_accessor :anchor, :tag, :dirty
 
         def accept(visitor)
           visitor.visit_array(self)
@@ -3774,7 +3911,7 @@ module Psych
             if value.empty? || ((psych_node = node.psych_node).is_a?(Nodes::Sequence) && psych_node.style == Nodes::Sequence::FLOW)
               visit_array_contents_flow(node.anchor, node.tag, value)
             else
-              visit_array_contents_block(node.anchor, node.tag, value)
+              visit_array_contents_block(node.anchor, node.tag, node.dirty, value)
             end
           end
         end
@@ -3812,7 +3949,7 @@ module Psych
         # Visit an OmapNode.
         def visit_omap(node)
           with_comments(node) do |value|
-            visit_array_contents_block(node.anchor, "!!omap", value)
+            visit_array_contents_block(node.anchor, "!!omap", false, value)
           end
         end
 
@@ -3864,7 +4001,7 @@ module Psych
         end
 
         # Visit the elements within an array in the block format.
-        def visit_array_contents_block(anchor, tag, contents)
+        def visit_array_contents_block(anchor, tag, dirty, contents)
           if anchor
             @q.text("&#{anchor}")
             tag ? @q.text(" ") : @q.breakable
@@ -3883,7 +4020,7 @@ module Psych
             if index > 0
               @q.breakable
 
-              if current_line && psych_node
+              if !dirty && current_line && psych_node
                 start_line = (leading&.first || psych_node).start_line
                 @q.breakable if start_line - current_line >= 2
               end
@@ -4274,6 +4411,7 @@ module Psych
             when Array
               dumped = ArrayNode.new(object.map { |element| dump(element) }, psych_node)
               dumped.tag = dump_tag(psych_node&.tag)
+              dumped.dirty = true if dirty
 
               @object_nodes[object] = dumped
             when Hash
