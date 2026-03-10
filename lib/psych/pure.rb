@@ -69,8 +69,8 @@ module Psych
           prev_start = offsets[l - 1]
           prev_end = offsets[l] - 1
           idx = prev_start
-          idx += 1 while idx < prev_end && string.getbyte(idx) == 0x20
-          break unless idx >= prev_end || string.getbyte(idx) == 0x23
+          idx += 1 while idx < prev_end && string.getbyte(idx) == 0x20 # space
+          break unless idx >= prev_end || string.getbyte(idx) == 0x23 # #
           offset = prev_start
           l -= 1
         end
@@ -88,8 +88,8 @@ module Psych
           prev_start = offsets[l - 1]
           prev_end = offsets[l] - 1
           idx = prev_start
-          idx += 1 while idx < prev_end && string.getbyte(idx) == 0x20
-          break unless idx < prev_end && string.getbyte(idx) == 0x23
+          idx += 1 while idx < prev_end && string.getbyte(idx) == 0x20 # space
+          break unless idx < prev_end && string.getbyte(idx) == 0x23 # #
           offset = prev_start
           l -= 1
         end
@@ -1057,6 +1057,10 @@ module Psych
         # flushed into the next event.
         @tag = nil
 
+        # When a tag handle is parsed, it is stored here until the tag prefix
+        # is parsed and the full tag can be resolved.
+        @tag_handle = nil
+
         # When an anchor is parsed, it is stored here until it can be flushed
         # into the next event.
         @anchor = nil
@@ -1098,8 +1102,11 @@ module Psych
         end
 
         yaml += "\n" if !yaml.empty? && !yaml.end_with?("\n")
-        self.string = yaml
 
+        # Set StringScanner's source (used by skip/match/eos?) and keep a
+        # direct reference for raw byte access (getbyte/byteslice) which
+        # bypasses StringScanner for performance-critical paths.
+        self.string = yaml
         @string = yaml
         @filename = filename
         @source = Source.new(yaml)
@@ -2140,6 +2147,9 @@ module Psych
       C_DOUBLE_QUOTED_ESCAPE_END1 = /\A\\\r?\n[ \t]*\z/
       C_DOUBLE_QUOTED_ESCAPE_END2 = /\A(?:[ \t]*\r?\n[ \t]*)+\z/
       C_DOUBLE_QUOTED_ESCAPE_END2_SUB = /[ \t]*\r?\n[ \t]*/
+
+      # Combined pattern for c-ns-esc-char [062], line folding [073-076],
+      # and hex escape sequences in double-quoted scalars.
       C_DOUBLE_QUOTED_GSUB = %r{(?:\r\n|\\\r?\n[ \t]*|(?:[ \t]*\r?\n[ \t]*)+|\\x([0-9a-fA-F]{2})|\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})|\\[\\ "/_0abefnrt\tvLNP])}
 
       private_constant :C_DOUBLE_QUOTED_ESCAPE_END1, :C_DOUBLE_QUOTED_ESCAPE_END2, :C_DOUBLE_QUOTED_ESCAPE_END2_SUB, :C_DOUBLE_QUOTED_GSUB
@@ -2482,10 +2492,18 @@ module Psych
         end
       end
 
+      # --- Fast paths ---
+      #
+      # These methods short-circuit the recursive descent for common simple
+      # cases (single-line plain scalars) to avoid method call overhead and
+      # allocations on the hot path. Each collects entries speculatively and
+      # bails (resetting pos) if anything non-trivial is encountered.
+      #
+      # The plain scalar regexps implement ns-plain-first [126] followed by
+      # nb-ns-plain-in-line [132] from the YAML spec. The flow variants
+      # exclude flow indicators (,[]{}) while the block variants do not.
+
       # Fast path for flow sequence entries: handles [plain1, plain2, ...]
-      # without going through the full recursive descent. Only handles
-      # single-line sequences of plain scalars (no flow pairs, no nested
-      # collections, no anchors/tags, no multi-line content).
       def parse_fast_flow_seq_entries
         return false if @anchor || @tag
 
