@@ -2,6 +2,6 @@
 
 module Psych
   module Pure
-    VERSION = "0.3.0"
+    VERSION = "0.3.1"
   end
 end
