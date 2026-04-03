@@ -18,6 +18,7 @@ module Psych
   # If Psych is older than 5.3, we need to modify the ScalarScanner to add the
   # parse_symbols parameter so that we can use it consistently when we
   # initialize it.
+  # :nocov:
   if Psych::VERSION < "5.3"
     ScalarScanner.prepend(Module.new {
       def initialize(class_loader, strict_integer: false, parse_symbols: true)
@@ -25,6 +26,7 @@ module Psych
       end
     })
   end
+  # :nocov:
 
   # A YAML parser written in Ruby.
   module Pure
@@ -4068,6 +4070,7 @@ module Psych
 
       # If the DEBUG environment variable is set, we'll decorate all of the
       # parse methods and print them out as they are encountered.
+      # :nocov:
       if !ENV.fetch("DEBUG", "").empty?
         class Debug < Module
           def initialize(methods)
@@ -4085,6 +4088,7 @@ module Psych
 
         prepend Debug.new(private_instance_methods.grep(/\Aparse_/))
       end
+      # :nocov:
     end
 
     # The emitter is responsible for taking Ruby objects and converting them

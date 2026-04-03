@@ -17,8 +17,8 @@ module Psych
           - beta
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
-        assert_instance_of Psych::Pure::LoadedArray, data
+        data = Pure.load(yaml, comments: true)
+        assert_instance_of LoadedArray, data
       end
 
       def test_delete_removes_element_from_dump
@@ -28,7 +28,7 @@ module Psych
           - also_keep
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         assert_equal ["keep_me", "delete_me", "also_keep"], data.to_a
 
         # Delete an element
@@ -37,7 +37,7 @@ module Psych
         assert_equal ["keep_me", "also_keep"], data.to_a
 
         # Dump should NOT include the deleted element
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         refute_includes output, "delete_me"
         assert_includes output, "keep_me"
         assert_includes output, "also_keep"
@@ -45,7 +45,7 @@ module Psych
 
       def test_delete_nonexistent_element
         yaml = "- item"
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
 
         result = data.delete("nonexistent")
         assert_nil result
@@ -60,12 +60,12 @@ module Psych
           - delta
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.reject! { |item| item == "beta" }
 
         assert_equal ["alpha", "gamma", "delta"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_includes output, "alpha"
         refute_includes output, "beta"
         assert_includes output, "gamma"
@@ -80,10 +80,10 @@ module Psych
           - delta
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.reject! { |item| item == "beta" }
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         refute_includes output, "\n\n", "Output should not contain blank lines"
       end
 
@@ -94,13 +94,13 @@ module Psych
           - third
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         result = data.delete_at(1)
 
         assert_equal "second", result
         assert_equal ["first", "third"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_includes output, "first"
         refute_includes output, "second"
         assert_includes output, "third"
@@ -114,13 +114,13 @@ module Psych
           - third
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         result = data.pop
 
         assert_equal "third", result
         assert_equal ["first", "second"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_includes output, "first"
         assert_includes output, "second"
         refute_includes output, "third"
@@ -133,13 +133,13 @@ module Psych
           - third
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         result = data.shift
 
         assert_equal "first", result
         assert_equal ["second", "third"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         refute_includes output, "first"
         assert_includes output, "second"
         assert_includes output, "third"
@@ -153,12 +153,12 @@ module Psych
           - c
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.clear
 
         assert_equal [], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_match(/^---\s*\[\]\s*$/, output)
       end
 
@@ -169,12 +169,12 @@ module Psych
           - large
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.keep_if { |item| item.length >= 5 }
 
         assert_equal ["small", "medium", "large"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         refute_includes output, "\n\n"
       end
 
@@ -186,13 +186,13 @@ module Psych
           - fourth
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         removed = data.slice!(1, 2)
 
         assert_equal ["second", "third"], removed.to_a
         assert_equal ["first", "fourth"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_includes output, "first"
         refute_includes output, "second"
         refute_includes output, "third"
@@ -208,12 +208,12 @@ module Psych
           - gamma
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.uniq!
 
         assert_equal ["alpha", "beta", "gamma"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         refute_includes output, "\n\n"
       end
 
@@ -224,12 +224,12 @@ module Psych
           - gamma
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.compact!
 
         assert_equal ["alpha", "gamma"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_includes output, "alpha"
         assert_includes output, "gamma"
         refute_includes output, "\n\n"
@@ -243,12 +243,12 @@ module Psych
           - remove2
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.delete_if { |item| item.start_with?("remove") }
 
         assert_equal ["keep1", "keep2"], data.to_a
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_includes output, "keep1"
         assert_includes output, "keep2"
         refute_includes output, "remove1"
@@ -266,10 +266,10 @@ module Psych
           - gamma
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.delete("beta")
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_includes output, "# First element comment"
         refute_includes output, "# Second element comment"
         assert_includes output, "# Third element comment"
@@ -281,7 +281,7 @@ module Psych
           - beta
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         refute data.dirty, "Array should not be dirty initially"
 
         data.delete("beta")
@@ -293,10 +293,158 @@ module Psych
           - alpha
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data << "beta"
 
         refute data.dirty, "Array should not be dirty after push"
+      end
+
+      def test_push
+        data = Pure.load("- alpha", comments: true)
+        result = data.push("beta", "gamma")
+
+        assert_same data, result
+        assert_equal ["alpha", "beta", "gamma"], data.to_a
+        refute data.dirty
+      end
+
+      def test_append
+        data = Pure.load("- alpha", comments: true)
+        data.append("beta")
+
+        assert_equal ["alpha", "beta"], data.to_a
+        refute data.dirty
+      end
+
+      def test_unshift
+        data = Pure.load("- beta", comments: true)
+        result = data.unshift("alpha")
+
+        assert_same data, result
+        assert_equal ["alpha", "beta"], data.to_a
+        refute data.dirty
+      end
+
+      def test_prepend
+        data = Pure.load("- beta", comments: true)
+        data.prepend("alpha")
+
+        assert_equal ["alpha", "beta"], data.to_a
+        refute data.dirty
+      end
+
+      def test_insert
+        data = Pure.load("- alpha\n- gamma", comments: true)
+        result = data.insert(1, "beta")
+
+        assert_same data, result
+        assert_equal ["alpha", "beta", "gamma"], data.to_a
+        refute data.dirty
+      end
+
+      def test_concat
+        data = Pure.load("- alpha", comments: true)
+        result = data.concat(["beta", "gamma"])
+
+        assert_same data, result
+        assert_equal ["alpha", "beta", "gamma"], data.to_a
+        refute data.dirty
+      end
+
+      def test_fill
+        data = Pure.load("- a\n- b\n- c", comments: true)
+        result = data.fill("x", 1, 2)
+
+        assert_same data, result
+        assert_equal ["a", "x", "x"], data.to_a
+        refute data.dirty
+      end
+
+      def test_aset_same_length
+        data = Pure.load("- alpha\n- beta", comments: true)
+        data[0] = "replaced"
+
+        assert_equal ["replaced", "beta"], data.to_a
+        refute data.dirty
+      end
+
+      def test_aset_changes_length
+        data = Pure.load("- alpha\n- beta\n- gamma", comments: true)
+        data[0, 2] = "replaced"
+
+        assert_equal ["replaced", "gamma"], data.to_a
+        assert data.dirty
+      end
+
+      def test_sort_bang
+        data = Pure.load("- gamma\n- alpha\n- beta", comments: true)
+        result = data.sort!
+
+        assert_same data, result
+        assert_equal ["alpha", "beta", "gamma"], data.to_a
+        assert data.dirty
+      end
+
+      def test_sort_by_bang
+        data = Pure.load("- bb\n- a\n- ccc", comments: true)
+        result = data.sort_by! { |item| item.length }
+
+        assert_same data, result
+        assert_equal ["a", "bb", "ccc"], data.to_a
+        assert data.dirty
+      end
+
+      def test_shuffle_bang
+        data = Pure.load("- alpha\n- beta\n- gamma", comments: true)
+        result = data.shuffle!(random: Random.new(42))
+
+        assert_same data, result
+        assert_equal 3, data.length
+        assert data.dirty
+      end
+
+      def test_reverse_bang
+        data = Pure.load("- alpha\n- beta\n- gamma", comments: true)
+        result = data.reverse!
+
+        assert_same data, result
+        assert_equal ["gamma", "beta", "alpha"], data.to_a
+        assert data.dirty
+      end
+
+      def test_rotate_bang
+        data = Pure.load("- alpha\n- beta\n- gamma", comments: true)
+        result = data.rotate!(1)
+
+        assert_same data, result
+        assert_equal ["beta", "gamma", "alpha"], data.to_a
+        assert data.dirty
+      end
+
+      def test_compact_non_bang
+        data = Pure.load("- alpha\n- null\n- gamma", comments: true)
+        result = data.compact
+
+        assert_equal ["alpha", "gamma"], result
+        refute data.dirty
+      end
+
+      def test_clone
+        data = Pure.load("- alpha\n- beta", comments: true)
+        cloned = data.clone
+
+        cloned << "gamma"
+        assert_equal ["alpha", "beta"], data.to_a
+        assert_equal ["alpha", "beta", "gamma"], cloned.to_a
+      end
+
+      def test_dup
+        data = Pure.load("- alpha\n- beta", comments: true)
+        duped = data.dup
+
+        duped << "gamma"
+        assert_equal ["alpha", "beta"], data.to_a
+        assert_equal ["alpha", "beta", "gamma"], duped.to_a
       end
 
       def test_preserves_blank_lines_when_not_mutated
@@ -306,10 +454,10 @@ module Psych
           - gamma
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         # No mutations, just dump
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         assert_includes output, "\n\n", "Should preserve intentional blank lines"
       end
 
@@ -322,10 +470,10 @@ module Psych
           - gamma
         YAML
 
-        data = Psych::Pure.load(yaml, comments: true)
+        data = Pure.load(yaml, comments: true)
         data.delete("beta")
 
-        output = Psych::Pure.dump(data)
+        output = Pure.dump(data)
         refute_includes output, "\n\n", "Should not preserve blank lines after mutation"
       end
     end
