@@ -5,14 +5,25 @@ on:
 - pull_request
 
 jobs:
+  ruby-versions:
+    uses: ruby/actions/.github/workflows/ruby_versions.yml@master
+    with:
+      engine: cruby
+      min_version: 3.3
+
   ci:
-    name: CI
+    name: CI (${{ matrix.ruby }})
+    needs: ruby-versions
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ${{ fromJson(needs.ruby-versions.outputs.versions) }}
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v6
     - uses: ruby/setup-ruby@v1
       with:
-        ruby-version: '3.4'
+        ruby-version: ${{ matrix.ruby }}
         bundler-cache: true
     - run: bundle exec rake cpanfile
     - uses: shogo82148/actions-setup-perl@v1
