@@ -4205,7 +4205,7 @@ module Psych
         # Visit an ArrayNode.
         def visit_array(node)
           with_comments(node) do |value|
-            if value.empty? || ((psych_node = node.psych_node).is_a?(Nodes::Sequence) && psych_node.style == Nodes::Sequence::FLOW)
+            if value.empty? || ((psych_node = node.psych_node).is_a?(Nodes::Sequence) && psych_node.style == Nodes::Sequence::FLOW && psych_node.children.any?)
               visit_array_contents_flow(node.anchor, node.tag, value)
             else
               visit_array_contents_block(node.anchor, node.tag, node.dirty, value)
@@ -4299,51 +4299,53 @@ module Psych
 
         # Visit the elements within an array in the block format.
         def visit_array_contents_block(anchor, tag, dirty, contents)
-          if anchor
-            @q.text("&#{anchor}")
-            tag ? @q.text(" ") : @q.breakable
-          end
+          @q.group do
+            if anchor
+              @q.text("&#{anchor}")
+              tag ? @q.text(" ") : @q.breakable
+            end
 
-          if tag
-            @q.text(tag)
-            @q.breakable
-          end
-
-          current_line = nil
-          contents.each_with_index do |element, index|
-            psych_node = element.psych_node
-            leading = psych_node&.comments&.leading
-
-            if index > 0
+            if tag
+              @q.text(tag)
               @q.breakable
+            end
 
-              if !dirty && current_line && psych_node
-                start_line = (leading&.first || psych_node).start_line
-                @q.breakable if start_line - current_line >= 2
+            current_line = nil
+            contents.each_with_index do |element, index|
+              psych_node = element.psych_node
+              leading = psych_node&.comments&.leading
+
+              if index > 0
+                @q.breakable
+
+                if !dirty && current_line && psych_node
+                  start_line = (leading&.first || psych_node).start_line
+                  @q.breakable if start_line - current_line >= 2
+                end
+              end
+
+              current_line = psych_node&.end_line
+              visit_leading_comments(leading) if leading&.any?
+
+              if psych_node && (trailing = psych_node.comments.trailing).any?
+                current_line = trailing.last.end_line
+              end
+
+              @q.text("-")
+              next if element.is_a?(NilNode)
+
+              @q.text(" ")
+              @q.nest(2) do
+                if psych_node
+                  psych_node.comments.without_leading { visit(element) }
+                else
+                  visit(element)
+                end
               end
             end
 
-            current_line = psych_node&.end_line
-            visit_leading_comments(leading) if leading&.any?
-
-            if psych_node && (trailing = psych_node.comments.trailing).any?
-              current_line = trailing.last.end_line
-            end
-
-            @q.text("-")
-            next if element.is_a?(NilNode)
-
-            @q.text(" ")
-            @q.nest(2) do
-              if psych_node
-                psych_node.comments.without_leading { visit(element) }
-              else
-                visit(element)
-              end
-            end
+            @q.current_group.break
           end
-
-          @q.current_group.break
         end
 
         # Visit the elements within an array in the flow format.
@@ -4405,7 +4407,7 @@ module Psych
             @q.text(" ")
             @q.nest(2) { visit(value) }
           when ArrayNode
-            if ((psych_node = value.psych_node).is_a?(Nodes::Sequence) && psych_node.style == Nodes::Sequence::FLOW) || value.value.empty?
+            if ((psych_node = value.psych_node).is_a?(Nodes::Sequence) && psych_node.style == Nodes::Sequence::FLOW && psych_node.children.any?) || value.value.empty?
               @q.text(" ")
               visit(value)
             elsif inlined || value.anchor || value.tag || value.value.empty?
@@ -4443,39 +4445,41 @@ module Psych
 
         # Visit the key/value pairs within a hash in the block format.
         def visit_hash_contents_block(anchor, tag, children)
-          if anchor
-            @q.text("&#{anchor}")
-            tag ? @q.text(" ") : @q.breakable
-          end
-
-          if tag
-            @q.text(tag)
-            @q.breakable
-          end
-
-          current_line = nil
-          ((0...children.length) % 2).each do |index|
-            key = children[index]
-            value = children[index + 1]
-
-            if index > 0
-              @q.breakable
-
-              if current_line && (psych_node = key.psych_node)
-                start_line = psych_node.start_line
-                if (leading = key.psych_node.comments.leading).any?
-                  start_line = leading.first.start_line
-                end
-
-                @q.breakable if start_line - current_line >= 2
-              end
+          @q.group do
+            if anchor
+              @q.text("&#{anchor}")
+              tag ? @q.text(" ") : @q.breakable
             end
 
-            current_line = (psych_node = value.psych_node) ? psych_node.end_line : nil
-            visit_hash_key_value(key, value)
-          end
+            if tag
+              @q.text(tag)
+              @q.breakable
+            end
 
-          @q.current_group.break
+            current_line = nil
+            ((0...children.length) % 2).each do |index|
+              key = children[index]
+              value = children[index + 1]
+
+              if index > 0
+                @q.breakable
+
+                if current_line && (psych_node = key.psych_node)
+                  start_line = psych_node.start_line
+                  if (leading = key.psych_node.comments.leading).any?
+                    start_line = leading.first.start_line
+                  end
+
+                  @q.breakable if start_line - current_line >= 2
+                end
+              end
+
+              current_line = (psych_node = value.psych_node) ? psych_node.end_line : nil
+              visit_hash_key_value(key, value)
+            end
+
+            @q.current_group.break
+          end
         end
 
         # Visit the key/value pairs within a hash in the flow format.
