@@ -425,6 +425,111 @@ module Psych
         assert_includes output, "a: 1"
         assert_includes output, "b: 2"
       end
+
+      def test_except
+        data = Psych::Pure.load("a: 1\nb: 2\nc: 3", comments: true)
+        result = data.except("b")
+
+        assert_equal ["a", "c"], result.keys
+        assert_equal ["a", "b", "c"], data.keys
+      end
+
+      def test_filter_bang
+        data = Psych::Pure.load("a: 1\nb: 2\nc: 3", comments: true)
+        result = data.filter! { |key, value| value > 1 }
+
+        assert_same data, result
+        assert_equal ["b", "c"], data.keys
+      end
+
+      def test_filter_bang_returns_nil_when_unchanged
+        data = Psych::Pure.load("a: 1", comments: true)
+        result = data.filter! { |key, value| value == 1 }
+
+        assert_nil result
+      end
+
+      def test_filter
+        data = Psych::Pure.load("a: 1\nb: 2\nc: 3", comments: true)
+        result = data.filter { |key, value| value > 1 }
+
+        assert_equal ["b", "c"], result.keys
+        assert_equal ["a", "b", "c"], data.keys
+      end
+
+      def test_invert
+        data = Psych::Pure.load("a: 1\nb: 2", comments: true)
+        result = data.invert
+
+        assert_equal [1, 2], result.keys
+        assert_equal "a", result[1]
+        assert_equal "b", result[2]
+      end
+
+      def test_reject
+        data = Psych::Pure.load("a: 1\nb: 2\nc: 3", comments: true)
+        result = data.reject { |key, value| value > 1 }
+
+        assert_equal ["a"], result.keys
+        assert_equal ["a", "b", "c"], data.keys
+      end
+
+      def test_slice
+        data = Psych::Pure.load("a: 1\nb: 2\nc: 3", comments: true)
+        result = data.slice("a", "c")
+
+        assert_equal ["a", "c"], result.keys
+      end
+
+      def test_compact
+        data = Psych::Pure.load("a: 1\nb: 2", comments: true)
+        data["b"] = nil
+        result = data.compact
+
+        assert_equal ["a"], result.keys
+        assert_equal ["a", "b"], data.keys
+      end
+
+      def test_transform_keys_bang
+        data = Psych::Pure.load("a: 1\nb: 2", comments: true)
+        result = data.transform_keys! { |key| key.upcase }
+
+        assert_same data, result
+        assert_equal ["A", "B"], data.keys
+      end
+
+      def test_transform_keys
+        data = Psych::Pure.load("a: 1\nb: 2", comments: true)
+        result = data.transform_keys { |key| key.upcase }
+
+        assert_equal ["A", "B"], result.keys
+        assert_equal ["a", "b"], data.keys
+      end
+
+      def test_transform_values_bang
+        data = Psych::Pure.load("a: 1\nb: 2", comments: true)
+        data.transform_values! { |value| value * 10 }
+
+        assert_equal 10, data["a"]
+        assert_equal 20, data["b"]
+      end
+
+      def test_transform_values
+        data = Psych::Pure.load("a: 1\nb: 2", comments: true)
+        result = data.transform_values { |value| value * 10 }
+
+        assert_equal 10, result["a"]
+        assert_equal 1, data["a"]
+      end
+
+      def test_clone
+        data = Psych::Pure.load("a: 1\nb: 2", comments: true)
+        cloned = data.clone
+
+        cloned["c"] = 3
+        assert_equal ["a", "b"], data.keys
+        assert_equal ["a", "b", "c"], cloned.keys
+      end
     end
   end
 end
