@@ -8,7 +8,7 @@ PATH
 GEM
   remote: https://rubygems.org/
   specs:
-    benchmark-ips (2.14.0)
+    benchmark-ips (2.15.1)
     date (3.5.1)
     docile (1.4.1)
     drb (2.2.3)
