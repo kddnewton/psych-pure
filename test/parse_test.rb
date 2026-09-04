@@ -42,6 +42,17 @@ module Psych
         assert_kind_of Nodes::Scalar, parse("1")
       end
 
+      def test_multibyte_start_lines
+        source = <<~YAML
+          名前: 山田太郎
+          挨拶: こんにちは
+          住所: 東京都
+        YAML
+        nodes = parse(source).children
+
+        assert_equal [0, 0, 1, 1, 2, 2], nodes.map(&:start_line)
+      end
+
       def test_sequence_block
         assert_kind_of Nodes::Sequence, parse("- 1")
       end

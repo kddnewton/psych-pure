@@ -51,7 +51,7 @@ module Psych
         @last_line_offset = 0
 
         idx = 0
-        while (found = string.index("\n", idx))
+        while (found = string.byteindex("\n", idx))
           offsets << (idx = found + 1)
         end
 
