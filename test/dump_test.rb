@@ -295,6 +295,30 @@ module Psych
           assert_equal(expected, dump(expected))
         end
 
+        def test_multibyte_does_not_add_blank_lines
+          source = <<~YAML
+            ---
+            ja:
+              dashboard: ダッシュボード
+              welcome: ようこそ
+          YAML
+
+          assert_equal source, dump(source)
+        end
+
+        def test_multibyte_preserves_blank_lines
+          source = <<~YAML
+            ---
+            挨拶: こんにちは
+
+            案内: いらっしゃいませ
+
+            結び: また会いましょう
+          YAML
+
+          assert_equal source, dump(source)
+        end
+
         private
 
         def dump(source, options = {})
